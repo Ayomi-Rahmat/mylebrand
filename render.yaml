@@ -1,0 +1,17 @@
+# Optional: lets Render set the service up from this file ("New > Blueprint").
+# You can ignore it and create the service by hand instead, as described in README.md.
+services:
+  - type: web
+    name: mylebrand-tracker
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ADMIN_PASSWORD
+        sync: false   # you type this in on Render, it is never stored in this file
+      - key: DATABASE_URL
+        sync: false   # paste your Neon connection string on Render
