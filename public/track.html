@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#f4ecdd">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <title>Track your order | MYLEBRAND</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="wrap">
+    <div class="wordmark">MYLEBRAND<sup>®</sup></div>
+    <p class="eyebrow">Order tracker</p>
+
+    <section id="lookup" class="card">
+      <h1 style="font-size:26px;margin-bottom:6px">Where is my order?</h1>
+      <p class="muted" style="margin:0 0 18px;font-size:15px">Enter the tracking ID and PIN we sent you on WhatsApp.</p>
+      <form id="form" autocomplete="off">
+        <div class="field">
+          <label for="id">TRACKING ID</label>
+          <input id="id" type="text" placeholder="MYLE-XXXXXX" autocapitalize="characters" spellcheck="false" maxlength="14" required>
+        </div>
+        <div class="field">
+          <label for="pin">6-DIGIT PIN</label>
+          <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••" autocomplete="off" required>
+        </div>
+        <button class="btn block" id="go" type="submit">Track my order →</button>
+        <p class="error" id="err" role="alert"></p>
+      </form>
+      <p class="hint">Lost your PIN? Message us on WhatsApp and we will send a new one.</p>
+    </section>
+
+    <section id="result" class="hidden"></section>
+  </main>
+  <script src="/tracker.js"></script>
+</body>
+</html>

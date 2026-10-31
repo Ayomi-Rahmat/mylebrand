@@ -3,6 +3,7 @@ const express = require('express');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { Pool, types } = require('pg');
+const compression = require('compression');
 const crypto = require('crypto');
 const path = require('path');
 const { promisify } = require('util');
@@ -106,6 +107,122 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS ix_orders_batch ON orders (batch_id);
     CREATE INDEX IF NOT EXISTS ix_events_order ON events (order_id);
   `);
+
+  // ----- the shop (added on top of the tracker; safe to run on a database that already has tracker data) -----
+  await q(`
+    ALTER TABLE batches ADD COLUMN IF NOT EXISTS slug TEXT;
+    ALTER TABLE batches ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft';
+    ALTER TABLE batches ADD COLUMN IF NOT EXISTS tagline TEXT NOT NULL DEFAULT '';
+    ALTER TABLE batches ADD COLUMN IF NOT EXISTS closes_on TEXT;
+    UPDATE batches SET slug = 'batch-' || id WHERE slug IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_batches_slug ON batches (slug);
+
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT '';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS total INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'paid';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS gift BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TEXT;
+
+    CREATE TABLE IF NOT EXISTS edits (
+      id SERIAL PRIMARY KEY,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      tagline TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      cover JSONB,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS products (
+      id SERIAL PRIMARY KEY,
+      edit_id INTEGER NOT NULL REFERENCES edits(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      price INTEGER NOT NULL,
+      compare_at INTEGER,
+      cost_price INTEGER,
+      category TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'product',
+      stock INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      images JSONB NOT NULL DEFAULT '[]',
+      sort INTEGER NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS box_items (
+      box_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+      qty INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (box_id, product_id)
+    );
+    CREATE TABLE IF NOT EXISTS order_items (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'product',
+      unit_price INTEGER NOT NULL,
+      unit_cost INTEGER,
+      qty INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS order_log (
+      id SERIAL PRIMARY KEY,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      at TEXT NOT NULL,
+      what TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS sold_out BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS qty_bought INTEGER;
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      address TEXT NOT NULL DEFAULT '',
+      pass_hash TEXT NOT NULL,
+      must_change BOOLEAN NOT NULL DEFAULT FALSE,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      locked_until BIGINT NOT NULL DEFAULT 0,
+      created_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS customer_sessions (
+      token_hash TEXT PRIMARY KEY,
+      customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      expires_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS carts (
+      customer_id INTEGER PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
+      items JSONB NOT NULL DEFAULT '[]',
+      updated_at BIGINT NOT NULL
+    );
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL;
+    CREATE TABLE IF NOT EXISTS expenses (
+      id SERIAL PRIMARY KEY,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      spent_on TEXT,
+      note TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS ix_orders_customer ON orders (customer_id);
+    CREATE INDEX IF NOT EXISTS ix_sessions_customer ON customer_sessions (customer_id);
+    CREATE INDEX IF NOT EXISTS ix_expenses_batch ON expenses (batch_id);
+    CREATE INDEX IF NOT EXISTS ix_edits_batch ON edits (batch_id);
+    CREATE INDEX IF NOT EXISTS ix_products_edit ON products (edit_id);
+    CREATE INDEX IF NOT EXISTS ix_order_items_order ON order_items (order_id);
+    CREATE INDEX IF NOT EXISTS ix_order_items_product ON order_items (product_id);
+    CREATE INDEX IF NOT EXISTS ix_order_log_order ON order_log (order_id);
+  `);
 }
 
 // ---------- helpers ----------
@@ -158,6 +275,22 @@ const dateOrNull = (v) => {
   if (isNaN(d.getTime())) throw httpError(400, 'One of the dates is not valid.');
   return d.toISOString().slice(0, 10);
 };
+const slugify = (s) =>
+  String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'item';
+const SLUG_TABLES = new Set(['batches', 'edits', 'products']);
+async function uniqueSlug(table, base, excludeId) {
+  if (!SLUG_TABLES.has(table)) throw new Error('bad table');
+  const root = slugify(base);
+  for (let i = 0; i < 200; i++) {
+    const s = i === 0 ? root : `${root}-${i + 1}`;
+    const r = await q(`SELECT 1 FROM ${table} WHERE slug = $1 AND id <> $2`, [s, excludeId || 0]);
+    if (!r.rows.length) return s;
+  }
+  return root + '-' + crypto.randomBytes(3).toString('hex');
+}
+const BATCH_STATUS = ['draft', 'open', 'closed'];
+
 // Ids from the URL must be whole numbers, otherwise Postgres would throw a confusing error.
 function intId(v, what) {
   const n = Number(v);
@@ -234,6 +367,8 @@ app.disable('x-powered-by');
 // Used by an uptime pinger to keep the free server awake. It deliberately does NOT touch the database,
 // so pings never wake the database or use up its free monthly hours.
 app.get('/healthz', (req, res) => res.type('text/plain').set('Cache-Control', 'no-store').send('ok'));
+// Some browsers ask for /favicon.ico no matter what; point them at our icon instead of showing a 404.
+app.get('/favicon.ico', (req, res) => res.redirect(301, '/favicon.svg'));
 
 app.use(
   helmet({
@@ -243,9 +378,9 @@ app.use(
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-        fontSrc: ['https://fonts.gstatic.com'],
-        imgSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'"],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", 'https://api.cloudinary.com'],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
         baseUri: ["'self'"],
@@ -255,9 +390,21 @@ app.use(
     crossOriginEmbedderPolicy: false,
   })
 );
-app.use((req, res, next) => { res.set('X-Robots-Tag', 'noindex, nofollow'); next(); });
+// The shop is meant to be found by search engines; the tracker, cart, admin and API are not.
+const NOINDEX = /^\/(api|admin|track|cart|checkout|thanks|account|login|signup|orders?)(\/|$|\.)/;
+app.use((req, res, next) => { if (NOINDEX.test(req.path)) res.set('X-Robots-Tag', 'noindex, nofollow'); next(); });
 app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+app.use(compression());
 app.use(express.json({ limit: '100kb' }));
+
+const deps = {
+  express, rateLimit, q, tx, httpError, clean, intId, dateOrNull, slugify, uniqueSlug,
+  newPublicId, newPin, hashPin, verifyPin, sha, cookies, sameOrigin, timelineFrom, STAGES, STAGE_INDEX, WHATSAPP, PROD,
+};
+// Public shop pages and checkout. Registered before the static files so "/" is the shop, not the tracker.
+deps.customer = require('./routes-customer')(app, deps);
+const shop = require('./routes-shop')(app, deps);
+deps.shop = shop;
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // Counted in memory per device. The real protection is the per-order lockout below, which lives in the database.
@@ -344,6 +491,13 @@ app.get('/api/admin/me', async (req, res) => res.json({ loggedIn: await isAdmin(
 // Everything below needs a logged-in admin.
 app.use('/api/admin', requireAdmin, sameOrigin);
 
+// Any change made by the admin refreshes what the public shop shows.
+app.use('/api/admin', (req, res, next) => {
+  if (!['GET', 'HEAD'].includes(req.method)) res.on('finish', shop.invalidate);
+  next();
+});
+require('./routes-admin-shop')(app, deps);
+
 app.get('/api/admin/stages', (req, res) => res.json({ stages: STAGES }));
 
 // ---------- admin: batches ----------
@@ -359,7 +513,8 @@ app.get('/api/admin/batches', async (req, res) => {
     let currentIndex = -1;
     events.forEach((e) => { currentIndex = Math.max(currentIndex, STAGE_INDEX[e.stage]); });
     return {
-      id: b.id, name: b.name, deliveryFrom: b.delivery_from, deliveryTo: b.delivery_to, lagosEta: b.lagos_eta,
+      id: b.id, name: b.name, slug: b.slug, status: b.status, tagline: b.tagline, closesOn: b.closes_on,
+      deliveryFrom: b.delivery_from, deliveryTo: b.delivery_to, lagosEta: b.lagos_eta,
       orderCount: counts[b.id] || 0, events, currentIndex,
     };
   });
@@ -369,9 +524,13 @@ app.post('/api/admin/batches', async (req, res) => {
   const b = req.body || {};
   const name = clean(b.name, 80);
   if (!name) throw httpError(400, 'Give the batch a name.');
+  const status = BATCH_STATUS.includes(b.status) ? b.status : 'draft';
+  const slug = await uniqueSlug('batches', name);
   const r = await q(
-    'INSERT INTO batches (name, delivery_from, delivery_to, lagos_eta, created_at) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-    [name, dateOrNull(b.deliveryFrom), dateOrNull(b.deliveryTo), dateOrNull(b.lagosEta), new Date().toISOString()]);
+    `INSERT INTO batches (name, slug, status, tagline, closes_on, delivery_from, delivery_to, lagos_eta, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    [name, slug, status, clean(b.tagline, 140), dateOrNull(b.closesOn), dateOrNull(b.deliveryFrom), dateOrNull(b.deliveryTo),
+      dateOrNull(b.lagosEta), new Date().toISOString()]);
   res.json({ id: r.rows[0].id });
 });
 app.patch('/api/admin/batches/:id', async (req, res) => {
@@ -379,11 +538,17 @@ app.patch('/api/admin/batches/:id', async (req, res) => {
   const cur = (await q('SELECT * FROM batches WHERE id = $1', [id])).rows[0];
   if (!cur) throw httpError(404, 'Batch not found.');
   const b = req.body || {};
-  await q('UPDATE batches SET name = $1, delivery_from = $2, delivery_to = $3, lagos_eta = $4 WHERE id = $5', [
+  if ('status' in b && !BATCH_STATUS.includes(b.status)) throw httpError(400, 'Status must be draft, open or closed.');
+  await q(
+    `UPDATE batches SET name = $1, delivery_from = $2, delivery_to = $3, lagos_eta = $4,
+                        status = $5, tagline = $6, closes_on = $7 WHERE id = $8`, [
     clean(b.name, 80) || cur.name,
     'deliveryFrom' in b ? dateOrNull(b.deliveryFrom) : cur.delivery_from,
     'deliveryTo' in b ? dateOrNull(b.deliveryTo) : cur.delivery_to,
     'lagosEta' in b ? dateOrNull(b.lagosEta) : cur.lagos_eta,
+    'status' in b ? b.status : cur.status,
+    'tagline' in b ? clean(b.tagline, 140) : cur.tagline,
+    'closesOn' in b ? dateOrNull(b.closesOn) : cur.closes_on,
     id,
   ]);
   res.json({ ok: true });
@@ -452,6 +617,7 @@ app.get('/api/admin/batches/:id/orders', async (req, res) => {
     const tl = timelineFrom(shared.concat(mine));
     return {
       id: o.id, publicId: o.public_id, name: o.customer_name, items: o.items,
+      phone: o.phone, total: o.total, status: o.status, source: o.source, gift: o.gift,
       locked: o.locked_until > Date.now(), createdAt: o.created_at,
       currentIndex: tl.currentIndex, updatedAt: tl.updatedAt,
       ownEvents: mine.map((e) => ({ stage: e.stage, at: e.at, note: e.note })),
@@ -569,8 +735,10 @@ app.delete('/api/admin/orders/:id/stages/:stage', async (req, res) => {
 
 // ---------- fallbacks ----------
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
+app.use((req, res, next) => shop.notFound(req, res, next));
 app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Bad request.' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'That is too large. Please send a smaller file.' });
   const status = err.status || 500;
   if (status >= 500) console.error(err);
   if (res.headersSent) return next(err);
@@ -581,6 +749,7 @@ app.use((err, req, res, next) => {
 (async () => {
   DUMMY_HASH = await hashPin('000000');
   await initDb();
+  await shop.start();
   const server = app.listen(PORT, () => console.log(`MYLEBRAND tracker running on port ${PORT}  (admin at /admin)`));
   const stop = () => { server.close(() => pool.end().finally(() => process.exit(0))); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop);

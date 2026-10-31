@@ -1,0 +1,25 @@
+/* MYLEBRAND design tokens. Change colours and fonts HERE and the whole shop follows.
+   To use your own fonts: put the files in /public/fonts and un-comment the @font-face blocks,
+   then swap the font names in the three --font-* lines below. */
+
+/* @font-face { font-family: 'Grande';        src: url('/fonts/Grande.woff2') format('woff2');        font-display: swap; }
+   @font-face { font-family: 'Angle';         src: url('/fonts/Angle.woff2') format('woff2');         font-display: swap; }
+   @font-face { font-family: 'August Script'; src: url('/fonts/AugustScript.woff2') format('woff2');  font-display: swap; font-weight: 700; } */
+
+:root {
+  --terracotta: #964B36;
+  --terracotta-dark: #6f3524;
+  --navy: #1A325A;
+  --sand: #C9AF80;
+  --cream: #EDE9DF;
+  --paper: #F7F4EC;
+  --ink: #2a1d18;
+  --muted: #7a6a60;
+  --line: #ddd5c4;
+  --ok: #2f6b4f;
+  --bad: #a3392f;
+
+  --font-display: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;   /* swap for Grande */
+  --font-body: 'Jost', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; /* swap for Angle */
+  --font-script: 'Pinyon Script', 'Cormorant Garamond', cursive;             /* swap for August Script */
+}

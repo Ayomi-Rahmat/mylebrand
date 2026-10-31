@@ -2,7 +2,7 @@
   'use strict';
   const TZ = 'Africa/Lagos';
   const app = document.getElementById('app');
-  const state = { stages: [], batches: [], selId: null, orders: [], tab: 'journey', selected: new Set(), fresh: null, showNew: false, editing: false };
+  const state = { stages: [], batches: [], selId: null, orders: [], tab: 'journey', selected: new Set(), fresh: null, showNew: false, editing: false, area: 'tracker' };
 
   // ---------- tiny helpers ----------
   function h(tag, attrs, ...kids) {
@@ -57,6 +57,8 @@
     try { await navigator.clipboard.writeText(text); toast(ok || 'Copied'); } catch (e) { toast('Could not copy. Select and copy it manually.', true); }
   }
 
+  const helpers = { h, api, toast, run, copy, fmt, rerender: () => render() };
+
   // ---------- login ----------
   function showLogin() {
     const err = h('p', { class: 'error', role: 'alert' });
@@ -97,9 +99,16 @@
   // ---------- rendering ----------
   function render() {
     const top = h('div', { class: 'topbar' },
-      h('div', null, h('div', { class: 'wordmark' }, 'MYLEBRAND', h('sup', null, '®')), h('div', { class: 'sub', text: 'Tracker admin' })),
+      h('div', null, h('div', { class: 'wordmark' }, 'MYLEBRAND', h('sup', null, '®')), h('div', { class: 'sub', text: 'Admin' })),
       h('button', { class: 'btn ghost small', onclick: () => run(async () => { await api('POST', '/api/admin/logout', {}); showLogin(); }) }, 'Log out'));
-    app.replaceChildren(h('div', { class: 'admin' }, top, h('div', { class: 'cols' }, sidebar(), main())));
+    const nav = h('div', { class: 'row chips areanav' }, [['tracker', 'Tracker'], ['shop', 'Shop']].map(([k, t]) =>
+      h('button', { class: 'chip big' + (state.area === k ? ' on' : ''), onclick: () => run(async () => {
+        state.area = k;
+        if (k === 'shop') await window.ShopAdmin.load(helpers);
+        render();
+      }) }, t)));
+    app.replaceChildren(h('div', { class: 'admin' }, top, nav,
+      state.area === 'shop' ? window.ShopAdmin.mount(helpers) : h('div', { class: 'cols' }, sidebar(), main())));
   }
 
   function sidebar() {

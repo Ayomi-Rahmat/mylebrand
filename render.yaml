@@ -15,3 +15,9 @@ services:
         sync: false   # you type this in on Render, it is never stored in this file
       - key: DATABASE_URL
         sync: false   # paste your Neon connection string on Render
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false   # from your free Cloudinary account (README, "Product photos")
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false   # keep private, like the admin password

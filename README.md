@@ -1,4 +1,57 @@
-# MYLEBRAND Order Tracker
+# MYLEBRAND Shop + Order Tracker
+
+One website, one free deployment: the **shop** (what customers see at `/`) and the **order tracker**
+(what you already have), joined together.
+
+## What is new: the shop
+
+- **Storefront** at `/`: batches, edits (collections like "The Becoming Edit"), products and boxes, available vs sold out.
+- **Customer accounts**: sign up / log in. Cart is saved to the account. Checkout needs an account.
+- **Checkout**: places the order, shows your bank details with copy buttons, then a green WhatsApp button
+  with a pre-written message. Everything else (what happens next, tracking) is on the order page.
+- **Order page = tracker**: once you mark an order **Paid**, the customer sees the batch timeline inside their account.
+  The older `/track` page (ID + PIN) still works for tracker-only orders.
+- **Admin** at `/admin`, two tabs:
+  - **Tracker**: your existing batches, customers, stages.
+  - **Shop**: Products (edits, products, boxes, photos, sold-out button), Orders (mark paid / cancel),
+    Ledger (money in, cost, expenses, profit, bought/sold/left per product), Customers (reset password),
+    Carts (what people have saved), Settings (bank, social links, gift, announcement).
+- You mark **sold out by hand** (button on each product). Nothing is counted down automatically.
+
+## Product photos (free): Cloudinary
+
+Photos are stored on Cloudinary, not on your free server, so they are fast and never fill your database.
+
+1. Sign up free at cloudinary.com. On the dashboard copy **Cloud name**, **API Key**, **API Secret**.
+2. On Render > your service > Environment, add `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`. Save (Render redeploys).
+3. In Admin > Shop > Products, "+ Add photos" now uploads straight from your phone or laptop.
+
+Until you do this you can still add photos by pasting any `https://` image link.
+Check Cloudinary's current free allowance on their pricing page; it changes.
+
+## First-time shop setup (10 minutes)
+
+1. Admin > Shop > **Settings**: bank details, WhatsApp, Instagram / TikTok / Facebook links, announcement.
+2. Admin > Tracker: create the batch. Admin > Shop > Products > "Shop settings for this batch": set it to **Open**.
+3. "+ New edit", then "+ Product" / "+ Box" inside it.
+4. Visit your site's home page. When a customer pays, Orders > Mark as paid.
+
+## Customer passwords
+
+There is no email service on the free plan. If a customer forgets their password they message you on WhatsApp;
+Admin > Shop > Customers > **Reset password** gives you a temporary one to send them. They must change it at next login.
+
+## Security notes
+
+- Passwords are scrypt-hashed. 5 wrong tries lock that account for 15 minutes; logins are rate limited per device.
+- Sessions are random tokens stored hashed in the database; cookies are HttpOnly. Admin and customer logins are separate.
+- Prices, totals and availability are always taken from the database at checkout, never from the browser.
+- Your cost prices and the ledger are admin-only and never sent to the public pages.
+- Keep `ADMIN_PASSWORD`, `DATABASE_URL` and `CLOUDINARY_API_SECRET` private.
+
+---
+
+# MYLEBRAND Order Tracker (the original guide)
 
 ## The idea in plain English
 
