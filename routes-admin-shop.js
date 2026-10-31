@@ -433,7 +433,12 @@ module.exports = function mountAdminShop(app, d) {
       const price = intIn(it.price, 1, 5000000, 'Wholesale price', { nullable: true });
       const resale = intIn(it.resale, 1, 5000000, 'Suggested resale price', { nullable: true });
       if (price !== null && resale !== null && resale <= price) throw httpError(400, `For "${name}", the resale price must be higher than your wholesale price.`);
-      items.push({ name, price, resale, minQty: intIn(it.minQty, 1, 10000, 'Minimum quantity', { nullable: true }), note: clean(it.note, 80) });
+      const oldPrice = intIn(it.oldPrice, 1, 5000000, 'Old price', { nullable: true });
+      if (price !== null && oldPrice !== null && oldPrice <= price) throw httpError(400, `For "${name}", the old price must be higher than the new price (or leave it empty).`);
+      items.push({
+        name, price, oldPrice, resale, minQty: intIn(it.minQty, 1, 10000, 'Minimum quantity', { nullable: true }), note: clean(it.note, 80),
+        desc: longText(it.desc, 600), images: readImages(it.images, 3),
+      });
     }
     return {
       title: clean(b.title, 80) || def.title, headline: clean(b.headline, 120) || def.headline, sub: clean(b.sub, 240),

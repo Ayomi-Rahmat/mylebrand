@@ -3,6 +3,32 @@
 One website, one free deployment: the **shop** (what customers see at `/`) and the **order tracker**
 (what you already have), joined together.
 
+## Pages and addresses
+
+| What | Address |
+|---|---|
+| Curated batch shop (home) | `/` |
+| Beauty wholesale (QR code) | `/beauty` |
+| Interiors (QR code) | `/interiors` |
+| Admin | `/admin` |
+| Older tracker (ID + PIN) | `/track` |
+
+Customers log in at `/login`; their orders and tracking are under **My orders**.
+
+**If products do not show on the site:** the batch is probably still a Draft. In Admin > Shop > Products you will see a yellow banner with a **Publish now** button.
+
+## Admin password: change it, and what to do if you forget it
+
+1. Admin > Shop > Settings > **Admin security**: change the password and click **Make new recovery codes**. Save the 8 codes somewhere private (they are shown once).
+2. Forgot the password? On the admin login page click **Forgot password?**, enter one recovery code and choose a new password. Each code works once.
+3. Lost the codes too? On Render > Environment, set `ADMIN_PASSWORD` to a new password (10+ characters) and add `ADMIN_FORCE_RESET` = `yes`. Save, wait for it to redeploy, log in with that password, then **delete `ADMIN_FORCE_RESET`**.
+
+## Changing the fonts
+
+Open `public/css/tokens.css`. The three `--font-*` lines are the fonts the whole site uses. To use your own font files (for example Grande, Angle, August Script): put the `.woff2` files in `public/fonts/`, un-comment the `@font-face` lines at the top of that file, and put the font names in the `--font-*` lines.
+
+---
+
 ## What is new: the shop
 
 - **Storefront** at `/`: batches, edits (collections like "The Becoming Edit"), products and boxes, available vs sold out.

@@ -214,6 +214,12 @@ async function initDb() {
       spent_on TEXT,
       note TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS admin_auth (
+      id INTEGER PRIMARY KEY,
+      pass_hash TEXT NOT NULL,
+      recovery JSONB NOT NULL DEFAULT '[]',
+      updated_at BIGINT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS ix_orders_customer ON orders (customer_id);
     CREATE INDEX IF NOT EXISTS ix_sessions_customer ON customer_sessions (customer_id);
     CREATE INDEX IF NOT EXISTS ix_expenses_batch ON expenses (batch_id);
@@ -466,19 +472,46 @@ app.post('/api/track', trackLimiter, async (req, res) => {
 });
 
 // ---------- admin: auth ----------
-app.post('/api/admin/login', loginLimiter, sameOrigin, async (req, res) => {
-  const pw = req.body && req.body.password;
-  if (typeof pw !== 'string' || !safeEqual(pw, ADMIN_PASSWORD)) {
-    return res.status(401).json({ error: 'Wrong password.' });
-  }
+// The admin password lives in the database once you change it in the app. Until then, the ADMIN_PASSWORD you set on Render is used.
+async function adminPasswordOk(pw) {
+  if (typeof pw !== 'string' || !pw || pw.length > 200) return false;
+  const r = await q('SELECT pass_hash FROM admin_auth WHERE id = 1');
+  if (r.rows.length) return verifyPin(pw, r.rows[0].pass_hash);
+  return safeEqual(pw, ADMIN_PASSWORD);
+}
+async function startAdminSession(res) {
   const token = crypto.randomBytes(32).toString('base64url');
   await q('DELETE FROM admin_sessions WHERE expires_at < $1', [Date.now()]);
   await q('INSERT INTO admin_sessions (token_hash, expires_at) VALUES ($1, $2)', [sha(token), Date.now() + SESSION_MS]);
-  res.setHeader(
-    'Set-Cookie',
-    `mb_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${PROD ? '; Secure' : ''}`
-  );
+  res.setHeader('Set-Cookie', `mb_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${PROD ? '; Secure' : ''}`);
+}
+app.post('/api/admin/login', loginLimiter, sameOrigin, async (req, res) => {
+  if (!(await adminPasswordOk(req.body && req.body.password))) return res.status(401).json({ error: 'Wrong password.' });
+  await startAdminSession(res);
   res.json({ ok: true });
+});
+// Forgot your password? Use one of the recovery codes you saved earlier (Admin > Shop > Settings > Security).
+const recoverLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 8, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many attempts. Try again in 15 minutes.' },
+});
+const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20);
+app.post('/api/admin/recover', recoverLimiter, sameOrigin, async (req, res) => {
+  const code = normCode(req.body && req.body.code);
+  const pw = req.body && req.body.password;
+  if (typeof pw !== 'string' || pw.length < 10 || pw.length > 100) throw httpError(400, 'Choose a new password of at least 10 characters.');
+  const BAD = 'That recovery code is not valid, or was already used.';
+  const row = (await q('SELECT recovery FROM admin_auth WHERE id = 1')).rows[0];
+  if (!row) throw httpError(400, 'No recovery codes were saved yet. See "Locked out completely?" in the README.');
+  const h = sha(code);
+  if (code.length !== 12 || !row.recovery.includes(h)) throw httpError(401, BAD);
+  const left = row.recovery.filter((x) => x !== h);
+  const r = await q('UPDATE admin_auth SET pass_hash = $1, recovery = $2, updated_at = $3 WHERE id = 1 AND recovery @> $4::jsonb RETURNING id',
+    [await hashPin(pw), JSON.stringify(left), Date.now(), JSON.stringify([h])]); // the @> check means a code can only be used once, even if two requests race
+  if (!r.rows.length) throw httpError(401, BAD);
+  await q('DELETE FROM admin_sessions');
+  await startAdminSession(res);
+  res.json({ ok: true, codesLeft: left.length });
 });
 app.post('/api/admin/logout', sameOrigin, async (req, res) => {
   const t = cookies(req).mb_admin;
@@ -497,6 +530,35 @@ app.use('/api/admin', (req, res, next) => {
   next();
 });
 require('./routes-admin-shop')(app, deps);
+
+const secLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many attempts. Try again in 15 minutes.' },
+});
+app.get('/api/admin/security', async (req, res) => {
+  const r = (await q('SELECT recovery FROM admin_auth WHERE id = 1')).rows[0];
+  res.json({ changedInApp: !!r, codesLeft: r ? r.recovery.length : 0 });
+});
+app.post('/api/admin/password', secLimiter, async (req, res) => {
+  const { current, next } = req.body || {};
+  if (!(await adminPasswordOk(current))) throw httpError(401, 'Your current password is not right.');
+  if (typeof next !== 'string' || next.length < 10 || next.length > 100) throw httpError(400, 'The new password needs at least 10 characters.');
+  if (next === current) throw httpError(400, 'Please choose a different password from the old one.');
+  await q(`INSERT INTO admin_auth (id, pass_hash, updated_at) VALUES (1, $1, $2)
+           ON CONFLICT (id) DO UPDATE SET pass_hash = EXCLUDED.pass_hash, updated_at = EXCLUDED.updated_at`, [await hashPin(next), Date.now()]);
+  const keep = cookies(req).mb_admin;
+  await q('DELETE FROM admin_sessions WHERE token_hash <> $1', [sha(keep || '')]);
+  res.json({ ok: true });
+});
+app.post('/api/admin/recovery-codes', secLimiter, async (req, res) => {
+  if (!(await adminPasswordOk(req.body && req.body.current))) throw httpError(401, 'Your current password is not right.');
+  const codes = Array.from({ length: 8 }, () => Array.from({ length: 12 }, () => ALPHA[crypto.randomInt(ALPHA.length)]).join(''));
+  const hashes = codes.map((c) => sha(c));
+  const existing = (await q('SELECT 1 FROM admin_auth WHERE id = 1')).rows.length;
+  if (existing) await q('UPDATE admin_auth SET recovery = $1, updated_at = $2 WHERE id = 1', [JSON.stringify(hashes), Date.now()]);
+  else await q('INSERT INTO admin_auth (id, pass_hash, recovery, updated_at) VALUES (1, $1, $2, $3)', [await hashPin(req.body.current), JSON.stringify(hashes), Date.now()]);
+  res.json({ codes: codes.map((c) => c.match(/.{4}/g).join('-')) });
+});
 
 app.get('/api/admin/stages', (req, res) => res.json({ stages: STAGES }));
 
@@ -749,6 +811,7 @@ app.use((err, req, res, next) => {
 (async () => {
   DUMMY_HASH = await hashPin('000000');
   await initDb();
+  if (process.env.ADMIN_FORCE_RESET === 'yes') { await q('DELETE FROM admin_auth'); await q('DELETE FROM admin_sessions'); console.log('[admin] ADMIN_FORCE_RESET is on: the admin password was reset to ADMIN_PASSWORD. Remove ADMIN_FORCE_RESET from Render now.'); }
   await shop.start();
   const server = app.listen(PORT, () => console.log(`MYLEBRAND tracker running on port ${PORT}  (admin at /admin)`));
   const stop = () => { server.close(() => pool.end().finally(() => process.exit(0))); setTimeout(() => process.exit(0), 5000).unref(); };

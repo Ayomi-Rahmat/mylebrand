@@ -38,7 +38,7 @@ module.exports = function mountShop(app, d) {
       headline: 'Buy beauty in bulk. Sell on campus. Keep the profit.',
       sub: 'Student-friendly wholesale prices on the skincare and lip essentials that sell fast.',
       items: ['Face masks', 'Hand creams', 'Eye masks', 'Lip masks', 'Lip balms', 'Natural lip balms', 'Eyeliners']
-        .map((name) => ({ name, price: null, minQty: null, resale: null, note: '' })),
+        .map((name) => ({ name, price: null, oldPrice: null, minQty: null, resale: null, note: '', desc: '', images: [] })),
       bonus: '', spots: null, deadline: '', groupLink: '', minNote: '',
     },
     interiors: {
