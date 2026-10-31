@@ -128,6 +128,26 @@
       }) }, 'Save'));
   }
 
+  function newBatchBox() {
+    const { h, api, toast } = H;
+    const name = h('input', { type: 'text', placeholder: 'Batch 03', maxlength: 80 });
+    return h('details', { class: 'card slim' }, h('summary', { text: S.batches.length ? '+ New batch' : '+ Create your first batch' }),
+      h('div', { class: 'field', style: 'margin-top:10px' }, h('label', { text: 'BATCH NAME' }), name),
+      h('button', { class: 'btn small', onclick: () => go(async () => {
+        const r = await api('POST', '/api/admin/batches', { name: name.value, status: 'open' }); S.batchId = r.id; toast('Batch created and open');
+      }) }, 'Create batch'));
+  }
+  function batchStatusNote() {
+    const { h, api, toast } = H;
+    const b = S.batches.find((x) => x.id === S.batchId);
+    if (!b) return h('div');
+    if (b.status === 'draft') return h('div', { class: 'notice warn' },
+      h('b', { text: 'This batch is hidden (Draft). ' }), 'Customers cannot see anything you add here until you publish it.',
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn small', onclick: () => go(async () => { await api('PATCH', '/api/admin/batches/' + b.id, { status: 'open' }); toast('Published. Customers can see it and order now.'); }) }, 'Publish now (open for orders)')));
+    if (b.status === 'closed') return h('div', { class: 'notice', text: 'This batch is Closed: customers can look but cannot order. Change it to Open below to take orders.' });
+    return h('div');
+  }
+
   function editForm() {
     const { h, api, toast } = H;
     const f = S.editForm;
@@ -210,7 +230,7 @@
 
   function productsTab() {
     const { h, api, toast } = H;
-    const wrap = h('div', null, batchPicker(), batchShopCard());
+    const wrap = h('div', null, batchPicker(), newBatchBox(), batchStatusNote(), batchShopCard());
     if (!S.batchId) return wrap;
     if (S.editForm) { wrap.append(editForm()); return wrap; }
     if (S.form) { wrap.append(productForm()); return wrap; }
@@ -362,7 +382,7 @@
       h('button', { class: 'chip' + (S.whLine === k ? ' on' : ''), onclick: () => { S.whLine = k; go(); } }, t))));
     wrap.append(h('div', { class: 'card' },
       h('p', { class: 'small', style: 'margin-top:0' }, 'This is the page your QR code opens: ', h('a', { href: url, target: '_blank', rel: 'noopener', text: url })),
-      h('p', { class: 'small muted', style: 'margin-bottom:0', text: 'Leave a price empty and the page shows “Ask us” for that product. The profit calculator appears once at least one price is filled in.' })));
+      h('p', { class: 'small muted', style: 'margin-bottom:0', text: 'Add each product with a photo, description and price. Put the higher price in “Old price” to show a discount. Leave a price empty and the page shows “Price on request”.' })));
     const f = {
       title: h('input', { type: 'text', value: L.title, maxlength: 80 }), headline: h('input', { type: 'text', value: L.headline, maxlength: 120 }),
       sub: h('textarea', { rows: 2, maxlength: 240 }, L.sub || ''), group: h('input', { type: 'text', value: L.groupLink || '', placeholder: 'https://chat.whatsapp.com/…' }),
@@ -376,24 +396,57 @@
       field('FIRST-ORDER BONUS (optional, only offer what you will honour)', f.bonus), field('LIMITED TO FIRST HOW MANY STUDENTS? (optional)', f.spots), field('OFFER ENDS ON (optional)', f.deadline)));
     const rows = h('div');
     const items = L.items;
+    const beauty = S.whLine === 'beauty';
     const drawRows = () => {
       rows.replaceChildren(...items.map((it, i) => {
-        const inp = (key, ph) => { const el = h('input', { type: 'text', inputmode: key === 'name' || key === 'note' ? 'text' : 'numeric', value: it[key] == null ? '' : it[key], placeholder: key === 'name' ? ph : '' });
-          el.addEventListener('input', () => { it[key] = el.value; }); return key === 'name' ? el : h('div', { class: 'mini' }, h('span', { text: ph }), el); };
+        if (!Array.isArray(it.images)) it.images = [];
+        const inp = (key, label, ph) => { const el = h('input', { type: 'text', inputmode: ['name', 'note'].includes(key) ? 'text' : 'numeric', value: it[key] == null ? '' : it[key], placeholder: ph || '' });
+          el.addEventListener('input', () => { it[key] = el.value; }); return h('div', { class: 'mini' }, h('span', { text: label }), el); };
+        const desc = h('textarea', { rows: 2, maxlength: 600, placeholder: 'What is it? Size, benefits, what is included…' }, it.desc || '');
+        desc.addEventListener('input', () => { it.desc = desc.value; });
         return h('div', { class: 'card slim' },
-          h('div', { class: 'row' }, inp('name', 'Product name'), h('button', { class: 'btn danger small', onclick: () => { items.splice(i, 1); drawRows(); } }, '✕')),
-          h('div', { class: 'row' }, inp('price', 'You pay ₦ (each)'), inp('resale', 'They sell at ₦'), inp('minQty', 'Min quantity'), inp('note', 'Note (size, shade…)')));
+          h('div', { class: 'row between' }, h('b', { text: it.name || 'New product' }), h('button', { class: 'btn danger small', onclick: () => { items.splice(i, 1); drawRows(); } }, 'Remove')),
+          h('div', { class: 'row' }, inp('name', 'PRODUCT NAME', 'e.g. Hydrating face mask')),
+          h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'DESCRIPTION' }), desc),
+          h('div', { class: 'row' }, inp('price', beauty ? 'YOU PAY ₦ (EACH)' : 'PRICE ₦'), inp('oldPrice', 'OLD PRICE ₦ (for a discount)'), beauty ? inp('resale', 'THEY SELL AT ₦') : null, inp('minQty', 'MIN QUANTITY')),
+          h('div', { class: 'row' }, inp('note', 'SHORT NOTE (size, shade…)')),
+          h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'PHOTOS (up to 3)' }), photoPicker(it.images, 3, (l) => { it.images = l; })));
       }));
     };
     drawRows();
     wrap.append(h('h3', { style: 'margin:6px 0 10px', text: 'Products and prices' }), rows,
-      h('div', { class: 'row' }, h('button', { class: 'btn ghost small', onclick: () => { items.push({ name: '', price: '', resale: '', minQty: '', note: '' }); drawRows(); } }, '+ Add product')),
+      h('div', { class: 'row' }, h('button', { class: 'btn ghost small', onclick: () => { items.push({ name: '', price: '', oldPrice: '', resale: '', minQty: '', note: '', desc: '', images: [] }); drawRows(); } }, '+ Add product')),
       h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'btn', onclick: () => go(async () => {
         const body = { title: f.title.value, headline: f.headline.value, sub: f.sub.value, groupLink: f.group.value, minNote: f.min.value,
           bonus: f.bonus.value, spots: f.spots.value, deadline: f.deadline.value, items };
         await api('PUT', '/api/admin/wholesale/' + S.whLine, body); toast('Saved. Your page is updated.');
       }) }, 'Save page')));
     return wrap;
+  }
+
+  // ---------- admin security: change password, recovery codes ----------
+  function securityCard() {
+    const { h, api, toast, copy } = H;
+    const cur = h('input', { type: 'password', autocomplete: 'current-password' }), nw = h('input', { type: 'password', autocomplete: 'new-password' });
+    const cur2 = h('input', { type: 'password', autocomplete: 'current-password' });
+    const out = h('div');
+    const info = h('p', { class: 'muted small', text: 'Loading…' });
+    api('GET', '/api/admin/security').then((r) => { info.textContent = r.codesLeft ? r.codesLeft + ' recovery codes left.' : 'You have not saved recovery codes yet. Make them now, so you can get back in if you forget your password.'; }).catch(() => {});
+    return h('div', { class: 'card' },
+      h('h3', { text: 'Admin security' }),
+      h('p', { class: 'small', style: 'margin-top:8px', text: 'Change your admin password' }),
+      field('CURRENT PASSWORD', cur), field('NEW PASSWORD (at least 10 characters)', nw),
+      h('button', { class: 'btn small', onclick: () => H.run(async () => { await api('POST', '/api/admin/password', { current: cur.value, next: nw.value }); cur.value = nw.value = ''; toast('Password changed'); }) }, 'Change password'),
+      h('hr', { style: 'border:0;border-top:1px solid var(--line);margin:18px 0' }),
+      h('p', { class: 'small', style: 'margin:0', text: 'Recovery codes (for “Forgot password?”)' }), info,
+      field('CURRENT PASSWORD', cur2),
+      h('button', { class: 'btn ghost small', onclick: () => H.run(async () => {
+        const r = await api('POST', '/api/admin/recovery-codes', { current: cur2.value }); cur2.value = '';
+        out.replaceChildren(h('div', { class: 'notice warn' }, h('b', { text: 'Save these now. They are shown only once. ' }), 'Each code works one time. Put them in a safe place, such as a photo in a private album or a password manager.'),
+          h('div', { class: 'codes' }, r.codes.map((c) => h('code', { text: c }))),
+          h('button', { class: 'btn small', onclick: () => copy(r.codes.join('\n'), 'Codes copied') }, 'Copy all'));
+        info.textContent = '8 recovery codes made. Old codes no longer work.';
+      }) }, 'Make new recovery codes'), out);
   }
 
   // ---------- settings ----------
@@ -414,7 +467,7 @@
       const body = {}; Object.keys(inputs).forEach((k) => { body[k] = inputs[k].value; });
       await api('PUT', '/api/admin/settings', body); toast('Saved');
     }) }, 'Save settings'));
-    return h('div', null, h('p', { class: 'muted small', text: 'Bank details are only shown to a customer after they place an order.' }), form);
+    return h('div', null, h('p', { class: 'muted small', text: 'Bank details are only shown to a customer after they place an order.' }), form, securityCard());
   }
 
   function mount(helpers) {

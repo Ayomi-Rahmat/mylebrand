@@ -114,26 +114,31 @@
 
   // ---------- chrome ----------
   function header() {
-    const a = (href, text, cls) => h('a', { href, class: cls || '', 'data-link': '' }, text);
-    return h('header', { class: 'hdr' }, h('div', { class: 'wrap' },
-      h('a', { href: '/', class: 'logo', 'data-link': '' }, 'MYLEBRAND', h('i', null, '意')),
-      h('nav', { class: 'nav' },
-        a('/', 'Shop', 'hide-sm'),
-        me ? a('/orders', 'My orders', 'hide-sm') : null,
-        me ? a('/account', me.name.split(' ')[0]) : a('/login', 'Log in'),
-        h('a', { href: '/cart', class: 'cartbtn', 'data-link': '', 'aria-label': 'Cart' }, '🛍', h('b', { text: String(cartCount()), style: cartCount() ? '' : 'display:none' })))));
+    const p = location.pathname;
+    const tab = (href, text, on) => h('a', { href, 'data-link': '', class: 'tab' + (on ? ' on' : '') }, text);
+    const curated = p === '/' || p.startsWith('/e/') || p.startsWith('/p/');
+    return h('header', { class: 'hdr' },
+      h('div', { class: 'wrap hdrrow' },
+        h('a', { href: '/', class: 'logo', 'data-link': '' }, 'MYLEBRAND'),
+        h('nav', { class: 'nav' },
+          me ? h('a', { href: '/account', 'data-link': '' }, me.name.split(' ')[0]) : h('a', { href: '/login', 'data-link': '' }, 'Log in'),
+          h('a', { href: '/cart', class: 'cartbtn', 'data-link': '' }, 'Cart', h('b', { text: String(cartCount()), style: cartCount() ? '' : 'display:none' })))),
+      h('div', { class: 'tabs' }, h('div', { class: 'wrap tabsrow' },
+        tab('/', 'Curated batch', curated), tab('/beauty', 'Beauty wholesale', p === '/beauty'), tab('/interiors', 'Interiors', p === '/interiors'),
+        me ? tab('/orders', 'My orders', p === '/orders' || p.startsWith('/order/')) : null)));
   }
-  function paintHeader() { const old = document.querySelector('.hdr'); if (old) old.replaceWith(header()); }
+    function paintHeader() { const old = document.querySelector('.hdr'); if (old) old.replaceWith(header()); }
   function footer() {
     const soc = [['Instagram', S.instagram], ['TikTok', S.tiktok], ['Facebook', S.facebook], ['WhatsApp', wa('Hi MYLEBRAND! 🤍')], ['Community', S.community]].filter((x) => x[1]);
     return h('footer', { class: 'ftr' }, h('div', { class: 'wrap' },
-      h('div', { class: 'logo' }, 'MYLEBRAND'),
-      h('p', { text: S.site_tagline }),
-      h('div', { class: 'soc' }, soc.map(([n, u]) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, n))),
-      h('div', { class: 'small' }, h('a', { href: '/track' }, 'Track an older order with ID + PIN'), '  ·  © ', String(new Date().getFullYear()), ' MYLEBRAND'),
-      h('div', { class: 'sig', text: '意' })));
+      h('div', { class: 'ftrtop' },
+        h('div', { class: 'ftrleft' }, h('div', { class: 'logo' }, 'MYLEBRAND'), h('p', { text: S.site_tagline })),
+        h('div', { class: 'soc' }, soc.map(([n, u]) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, n)))),
+      h('div', { class: 'ftrbot' },
+        h('a', { href: '/track', class: 'small' }, 'Track an older order with ID + PIN'),
+        h('div', { class: 'copy-line' }, '© ' + new Date().getFullYear() + ' MYLEBRAND', h('span', { class: 'seal-sm', 'aria-hidden': 'true', text: '意' })))));
   }
-  function shell(...content) {
+    function shell(...content) {
     const a = S.announcement ? h('div', { class: 'announce', text: S.announcement }) : null;
     app.replaceChildren(...[a, header(), h('main', { id: 'main' }, content), footer()].filter(Boolean));
   }
@@ -143,7 +148,7 @@
     const closed = b && !b.open;
     return h('a', { class: 'pcard' + (p.soldOut ? ' soldout' : ''), href: '/p/' + p.slug, 'data-link': '' },
       h('div', { class: 'ph' },
-        p.images[0] ? h('img', { src: img(p.images[0].url, 500), alt: p.name, loading: 'lazy', width: 500, height: 625 }) : h('div', { class: 'noimg', text: '意' }),
+        p.images[0] ? h('img', { src: img(p.images[0].url, 500), alt: p.name, loading: 'lazy', width: 500, height: 625 }) : h('div', { class: 'noimg', text: '✦' }),
         p.soldOut ? h('span', { class: 'badge sold', text: 'Sold out' }) : (closed ? null : null),
         p.kind === 'box' ? h('span', { class: 'badge box', text: 'Box' }) : null),
       h('div', { class: 'nm', text: p.name }),
@@ -170,34 +175,54 @@
   function pageHome() {
     const b = heroBatch();
     document.title = 'MYLEBRAND | Curated lifestyle pieces for intentional living';
-    const left = b && b.open ? daysLeft(b) : null;
+    const open = !!(b && b.open);
+    const left = open ? daysLeft(b) : null;
+    const lines = cat.lines || {};
+    const go2 = (id) => (e) => { e.preventDefault(); const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: 'smooth' }); };
     const hero = h('section', { class: 'hero', style: 'padding:0' }, h('div', { class: 'wrap' },
-      b ? h('span', { class: 'pill' + (b.open ? ' dot' : '') }, b.open ? b.name + ' · preorders open' : b.name + ' · preorders closed') : null,
+      h('div', { class: 'eyebrow', text: 'MYLEBRAND' }),
       h('h1', { text: 'Pieces chosen with intention.' }),
-      h('p', { class: 'lead', text: (b && b.tagline) || S.site_tagline }),
-      b && b.open && left !== null ? h('p', { class: 'small', style: 'margin:-8px 0 18px', text: left <= 0 ? 'Last day to order!' : 'Preorders close in ' + left + ' day' + (left === 1 ? '' : 's') + ' (' + fmtDay(b.closesOn) + ')' }) : null,
-      b && b.edits.length ? h('a', { class: 'btn light', href: '#edits', onclick: (e) => { e.preventDefault(); document.getElementById('edits').scrollIntoView(); } }, 'Shop the edits') : h('a', { class: 'btn light', href: S.community || wa('Hi MYLEBRAND! Please add me to the list for the next batch 🤍'), target: '_blank', rel: 'noopener' }, 'Join the list'),
-      h('div', { class: 'seal', 'aria-hidden': 'true', text: '意' })));
+      h('p', { class: 'lead', text: S.site_tagline }),
+      h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap' },
+        b ? h('a', { class: 'btn light', href: '#preorder', onclick: go2('preorder') }, open ? 'See the preorder' : 'See the last batch') : null,
+        h('a', { class: 'btn ghost light', href: '/beauty', 'data-link': '' }, 'Beauty wholesale'))));
     const parts = [hero];
-    if (b && b.edits.length) {
-      parts.push(h('section', { id: 'edits' }, h('div', { class: 'wrap' },
-        h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: b.name }), h('h2', { text: 'The edits' }),
-          b.open ? null : h('p', { class: 'muted', text: 'Preorders for this batch are closed. Browse what was in it, and join the list to hear about the next one.' })),
-        b.open ? h('div', { style: 'margin-bottom:22px' }, giftNote()) : null,
-        h('div', { class: 'editgrid' }, b.edits.map((e) => {
-          const first = e.cover ? e.cover.url : (e.products.find((p) => p.images[0]) || { images: [] }).images[0];
-          const u = e.cover ? e.cover.url : (first ? first.url : null);
-          return h('a', { class: 'editcard', href: '/e/' + e.slug, 'data-link': '' },
-            u ? h('img', { src: img(u, 800), alt: '', loading: 'lazy' }) : null,
-            h('div', { class: 'txt' }, h('div', { class: 'count', text: e.products.length + ' piece' + (e.products.length === 1 ? '' : 's') }), h('h3', { text: e.name }), e.tagline ? h('p', { text: e.tagline }) : null));
-        })))));
+    const all = b ? b.edits.flatMap((e) => e.products.map((p) => ({ p, e }))) : [];
+    if (b) {
+      const facts = [];
+      if (open && b.closesOn) facts.push(['Preorders close', fmtDay(b.closesOn) + (left !== null ? (left <= 0 ? ' (last day!)' : ' · ' + left + ' day' + (left === 1 ? '' : 's') + ' left') : '')]);
+      if (b.deliveryFrom) facts.push(['Delivery', fmtDay(b.deliveryFrom) + (b.deliveryTo ? ' – ' + fmtDay(b.deliveryTo) : '')]);
+      facts.push(['Pieces', String(all.length)]);
+      parts.push(h('section', { id: 'preorder', style: 'padding-bottom:10px' }, h('div', { class: 'wrap' },
+        h('div', { class: 'prebox' },
+          h('div', null,
+            h('span', { class: 'pill' + (open ? ' dot' : ''), style: 'border-color:var(--line);color:var(--ink)', text: open ? 'Preorders open' : 'Preorders closed' }),
+            h('h2', { text: b.name }), b.tagline ? h('p', { class: 'muted', style: 'margin:8px 0 0', text: b.tagline }) : null,
+            h('div', { class: 'wfacts', style: 'margin-top:12px' }, facts.map(([k, v]) => h('span', null, h('i', { text: k }), ' ', v)))),
+          h('div', { class: 'preact' },
+            open ? giftNote() : null,
+            h('a', { class: 'btn', href: '#available', onclick: go2('available') }, open ? 'Shop the batch' : 'Browse the batch'))))));
+      if (all.length) {
+        const shown = [...all.filter((x) => !x.p.soldOut), ...all.filter((x) => x.p.soldOut)].slice(0, 8);
+        parts.push(h('section', { id: 'available' }, h('div', { class: 'wrap' },
+          h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: b.name }), h('h2', { text: open ? 'Available to preorder' : 'From this batch' })),
+          h('div', { class: 'grid four' }, shown.map((x) => productCard(x.p, b))),
+          b.edits.length ? h('div', { class: 'chips', style: 'margin:22px 0 0' }, h('span', { class: 'small muted', style: 'align-self:center', text: 'Browse by edit:' }),
+            b.edits.map((e) => h('a', { class: 'chip', href: '/e/' + e.slug, 'data-link': '', style: 'text-decoration:none', text: e.name }))) : null)));
+      }
     } else {
       parts.push(h('section', null, h('div', { class: 'wrap center' }, h('h2', { text: 'The next batch is being prepared.' }),
         h('p', { class: 'muted', text: 'Join the list and you will be the first to know when preorders open.' }),
         h('a', { class: 'btn', href: S.community || wa('Hi MYLEBRAND! Please add me to the list 🤍'), target: '_blank', rel: 'noopener' }, 'Join on WhatsApp'))));
     }
+    const card = (href, title, d) => h('a', { class: 'linecard', href, 'data-link': '' }, h('div', { class: 'eyebrow', text: 'MYLEBRAND' }), h('h3', { text: title }), h('p', { class: 'muted', text: d }), h('span', { class: 'btn small', text: 'Open' }));
+    parts.push(h('section', { style: 'padding-top:10px' }, h('div', { class: 'wrap' },
+      h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: 'More from us' }), h('h2', { text: 'Shop by collection' })),
+      h('div', { class: 'editgrid' },
+        card('/beauty', (lines.beauty && lines.beauty.title) || 'Beauty wholesale', (lines.beauty && lines.beauty.sub) || 'Buy in bulk at student prices.'),
+        card('/interiors', (lines.interiors && lines.interiors.title) || 'Interiors', (lines.interiors && lines.interiors.sub) || 'Simple pieces for your space.')))));
     parts.push(h('section', { style: 'padding-top:0' }, h('div', { class: 'wrap' },
-      h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: 'How it works' }), h('h2', { text: 'Preorder, then relax.' })),
+      h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: 'How preorders work' }), h('h2', { text: 'Preorder, then relax.' })),
       h('div', { class: 'steps' },
         [['Choose', 'Pick your pieces from the open batch and add them to your cart.'],
           ['Pay by transfer', 'Place your order and pay to our account. We confirm it by hand.'],
@@ -208,7 +233,7 @@
     shell(parts);
   }
 
-  function pageEdit(slug) {
+    function pageEdit(slug) {
     const f = findEdit(slug);
     if (!f) return pageNotFound();
     const { b, e } = f;
@@ -240,7 +265,7 @@
     const main = h('div', { class: 'main' });
     const ths = h('div', { class: 'ths' });
     const drawG = () => {
-      main.replaceChildren(p.images[cur] ? h('img', { src: img(p.images[cur].url, 900), alt: p.name, width: 900, height: 1125 }) : h('div', { class: 'noimg', text: '意' }));
+      main.replaceChildren(p.images[cur] ? h('img', { src: img(p.images[cur].url, 900), alt: p.name, width: 900, height: 1125 }) : h('div', { class: 'noimg', text: '✦' }));
       ths.replaceChildren(...(p.images.length > 1 ? p.images.map((im, i) => h('button', { class: i === cur ? 'on' : '', 'aria-label': 'Photo ' + (i + 1), onclick: () => { cur = i; drawG(); } }, h('img', { src: img(im.url, 128), alt: '' }))) : []));
     };
     drawG();
@@ -287,7 +312,7 @@
       h('div', { class: 'card' }, lines.map((l) => {
         const p = l.info && l.info.p;
         return h('div', { class: 'line' },
-          p && p.images[0] ? h('img', { src: img(p.images[0].url, 160), alt: '' }) : h('div', { class: 'noimg', style: 'width:64px;height:80px;flex:none;background:#dcd3c0;border-radius:10px', text: '意' }),
+          p && p.images[0] ? h('img', { src: img(p.images[0].url, 160), alt: '' }) : h('div', { class: 'noimg', style: 'width:64px;height:80px;flex:none;background:#dcd3c0;border-radius:10px', text: '✦' }),
           h('div', { class: 'grow' }, h('div', { class: 'nm', text: p ? p.name : 'Item no longer available' }),
             p ? h('div', { class: 'muted small', text: p.soldOut ? 'Sold out' : naira(p.price) + ' each' }) : null,
             h('button', { class: 'linkbtn', onclick: () => setQty(l.id, 0) }, 'Remove')),
@@ -462,9 +487,10 @@
     const L = (cat.lines || {})[line];
     if (!L) return pageNotFound();
     document.title = L.title + ' | MYLEBRAND';
-    const tag = line === 'beauty' ? 'BW' : 'IN';
+    const beauty = line === 'beauty';
+    const tag = beauty ? 'BW' : 'IN';
     const group = L.groupLink || S.community;
-    const hello = 'Hi MYLEBRAND! 🤍 I am a student interested in ' + L.title.toLowerCase() + '. Please send me the price list. [' + tag + ']';
+    const hello = 'Hi MYLEBRAND! 🤍 I am interested in ' + L.title.toLowerCase() + '. Please send me the ' + (beauty ? 'price list' : 'details') + '. [' + tag + ']';
     const live = L.deadline && Date.parse(L.deadline + 'T23:59:59+01:00') > Date.now();
     const qty = L.items.map(() => 0);
     const hasPrices = L.items.some((i) => i.price);
@@ -480,14 +506,19 @@
       const order = 'Hi MYLEBRAND! 🤍 I would like to order:\n' + picked.join('\n') + '\nTotal: ' + naira(cost) + '\n[' + tag + ']';
       const rows = L.items.map((it, i) => {
         const facts = [];
-        if (it.price) facts.push(['You pay', naira(it.price)]);
-        if (it.resale) facts.push(['You sell at', naira(it.resale)]);
-        if (it.price && it.resale) facts.push(['Profit each', '+' + naira(it.resale - it.price)]);
-        if (it.minQty) facts.push(['Minimum', it.minQty + ' pcs']);
+        if (it.price) {
+          const pct = it.oldPrice && it.oldPrice > it.price ? Math.round((1 - it.price / it.oldPrice) * 100) : 0;
+          facts.push(h('span', null, h('i', { text: beauty ? 'You pay' : 'Price' }), ' ', h('b', { text: naira(it.price) }), pct ? [' ', h('s', { class: 'muted', text: naira(it.oldPrice) }), ' ', h('em', { class: 'off', text: '-' + pct + '%' })] : null));
+        }
+        if (it.resale) facts.push(h('span', null, h('i', { text: 'You sell at' }), ' ', naira(it.resale)));
+        if (it.price && it.resale) facts.push(h('span', { class: 'gain' }, h('i', { text: 'Profit each' }), ' +' + naira(it.resale - it.price)));
+        if (it.minQty) facts.push(h('span', null, h('i', { text: 'Minimum' }), ' ' + it.minQty + ' pcs'));
+        const im = (it.images || [])[0];
         return h('div', { class: 'wrow' },
+          im ? h('img', { class: 'wimg', src: img(im.url, 200), alt: it.name, loading: 'lazy' }) : null,
           h('div', { class: 'wmain' }, h('b', { text: it.name }), it.note ? h('span', { class: 'small muted', text: ' · ' + it.note }) : null,
-            facts.length ? h('div', { class: 'wfacts' }, facts.map(([k, v]) => h('span', { class: k === 'Profit each' ? 'gain' : '' }, h('i', { text: k }), ' ', v)))
-              : h('div', { class: 'small muted', text: 'Price on request. Ask us on WhatsApp.' })),
+            it.desc ? h('div', { class: 'small muted wdesc', text: it.desc }) : null,
+            facts.length ? h('div', { class: 'wfacts' }, facts) : h('div', { class: 'small muted', text: 'Price on request. Ask us on WhatsApp.' })),
           it.price ? stepper(qty[i], (n) => { qty[i] = Math.max(0, Math.min(999, n)); draw(); }) : null);
       });
       box.replaceChildren(...[
@@ -496,41 +527,40 @@
         hasPrices ? h('div', { class: 'card calc' },
           h('h3', { text: 'Your order' }),
           picked.length ? [
-            h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: 'You pay' }), h('span', { text: naira(cost) })),
-            allResale ? h('div', { class: 'totalrow gain', style: 'font-size:1.1rem;border-top:0' }, h('span', { text: 'If you sell everything' }), h('span', { text: '+' + naira(sell - cost) + ' profit' })) : null,
+            h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: beauty ? 'You pay' : 'Total' }), h('span', { text: naira(cost) })),
+            beauty && allResale ? h('div', { class: 'totalrow gain', style: 'font-size:1.1rem;border-top:0' }, h('span', { text: 'If you sell everything' }), h('span', { text: '+' + naira(sell - cost) + ' profit' })) : null,
             short.length ? h('div', { class: 'notice', text: 'Minimum not reached: ' + short.join(', ') }) : null,
             h('a', { class: 'btn wa block', href: wa(order), target: '_blank', rel: 'noopener' }, 'Send my order on WhatsApp'),
-          ] : h('p', { class: 'muted', style: 'margin:0', text: 'Tap + next to a product to see what you would pay and how much you could earn.' })) : null,
+          ] : h('p', { class: 'muted', style: 'margin:0', text: beauty ? 'Tap + next to a product to see what you would pay and how much you could earn.' : 'Tap + next to a product to build your order.' })) : null,
       ].filter(Boolean));
     };
     draw();
     shell(
       h('section', { class: 'hero', style: 'padding:0' }, h('div', { class: 'wrap' },
-        h('div', { class: 'eyebrow', text: 'MYLEBRAND · Student wholesale' }),
+        h('div', { class: 'eyebrow', text: beauty ? 'MYLEBRAND · Student wholesale' : 'MYLEBRAND · Interiors' }),
         h('h1', { text: L.headline }),
         h('p', { class: 'lead', text: L.sub }),
         h('div', { style: 'display:flex;gap:10px;flex-wrap:wrap' },
-          h('a', { class: 'btn light', href: wa(hello), target: '_blank', rel: 'noopener' }, 'Get the price list on WhatsApp'),
-          group ? h('a', { class: 'btn ghost light', href: group, target: '_blank', rel: 'noopener' }, 'Join the group') : null),
-        h('div', { class: 'seal', 'aria-hidden': 'true', text: '意' }))),
+          h('a', { class: 'btn light', href: wa(hello), target: '_blank', rel: 'noopener' }, beauty ? 'Get the price list on WhatsApp' : 'Chat with us on WhatsApp'),
+          group ? h('a', { class: 'btn ghost light', href: group, target: '_blank', rel: 'noopener' }, 'Join the group') : null))),
       h('div', { class: 'wrap' },
         L.bonus ? h('div', { class: 'giftbar', style: 'margin-top:26px' }, h('span', { style: 'font-size:1.6rem', text: '🎁' }),
           h('div', null, h('b', { text: L.bonus }), live || L.spots ? h('div', { class: 'small', text: [L.spots ? 'Limited to the first ' + L.spots + ' students.' : '', live ? 'Ends ' + fmtDay(L.deadline) + '.' : ''].filter(Boolean).join(' ') }) : null)) : null,
         h('section', { style: 'padding-bottom:20px' },
-          h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: 'Price list' }), h('h2', { text: 'What you pay, what you earn' })),
+          h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: beauty ? 'Price list' : 'Available now' }), h('h2', { text: beauty ? 'What you pay, what you earn' : 'Pick what you like' })),
           box),
         h('section', { style: 'padding-top:10px' },
-          h('div', { class: 'steps three' }, [['Choose', 'Pick what you want to sell and see your profit.'], ['Order on WhatsApp', 'Tap the button. Your order is written for you.'], ['We confirm', 'We confirm your order and tell you how you will get it.']]
+          h('div', { class: 'steps three' }, [['Choose', beauty ? 'Pick what you want to sell and see your profit.' : 'Pick the pieces you want.'], ['Order on WhatsApp', 'Tap the button. Your order is written for you.'], ['We confirm', 'We confirm your order and tell you how you will get it.']]
             .map(([t, d]) => h('div', { class: 'step' }, h('b', { text: t }), h('span', { class: 'muted', text: d }))))),
-        h('div', { class: 'card center', style: 'margin-top:26px' }, h('h3', { text: 'Not sure yet?' }), h('p', { class: 'muted', text: 'Join the group to see new stock and student prices first.' }),
+        h('div', { class: 'card center', style: 'margin-top:26px' }, h('h3', { text: 'Not sure yet?' }), h('p', { class: 'muted', text: 'Join the group to see new stock and prices first.' }),
           h('div', { style: 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap' },
             group ? h('a', { class: 'btn', href: group, target: '_blank', rel: 'noopener' }, 'Join the group') : null,
             h('a', { class: 'btn wa', href: wa(hello), target: '_blank', rel: 'noopener' }, 'Chat with us')))));
   }
 
-  function pageNotFound() {
+    function pageNotFound() {
     document.title = 'Not found | MYLEBRAND';
-    shell(h('div', { class: 'narrow page empty' }, h('div', { class: 'big', text: '意' }), h('h1', { text: 'We could not find that page' }), h('p', { class: 'muted', text: 'It may have moved, or it is not part of an open batch.' }), h('a', { class: 'btn', href: '/', 'data-link': '' }, 'Back to the shop')));
+    shell(h('div', { class: 'narrow page empty' }, h('div', { class: 'big', text: '✦' }), h('h1', { text: 'We could not find that page' }), h('p', { class: 'muted', text: 'It may have moved, or it is not part of an open batch.' }), h('a', { class: 'btn', href: '/', 'data-link': '' }, 'Back to the shop')));
   }
 
   // ---------- router ----------

@@ -38,7 +38,7 @@
       method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
     });
     const data = await r.json().catch(() => ({}));
-    if (r.status === 401 && url !== '/api/admin/login') { showLogin(); throw new Error('Please log in again.'); }
+    if (r.status === 401 && data.error === 'Please log in.') { showLogin(); throw new Error('Please log in again.'); }
     if (!r.ok) throw new Error(data.error || 'Something went wrong.');
     return data;
   }
@@ -71,12 +71,36 @@
         catch (ex) { err.textContent = ex.message; }
         btn.disabled = false;
       },
-    }, h('div', { class: 'field' }, h('label', { for: 'pw', text: 'ADMIN PASSWORD' }), pw), btn, err);
+    }, h('div', { class: 'field' }, h('label', { for: 'pw', text: 'ADMIN PASSWORD' }), pw), btn, err,
+      h('p', { class: 'hint' }, h('button', { type: 'button', class: 'linkbtn', style: 'background:none;border:0;text-decoration:underline;cursor:pointer;color:inherit', onclick: showRecover }, 'Forgot password?')));
     app.replaceChildren(h('main', { class: 'wrap' },
       h('div', { class: 'wordmark' }, 'MYLEBRAND', h('sup', null, '®')),
       h('p', { class: 'eyebrow', text: 'Tracker admin' }),
       h('div', { class: 'card' }, form)));
     pw.focus();
+  }
+
+  function showRecover() {
+    const err = h('p', { class: 'error', role: 'alert' });
+    const code = h('input', { type: 'text', id: 'rc', autocomplete: 'off', placeholder: 'XXXX-XXXX-XXXX', required: 'required' });
+    const pw = h('input', { type: 'password', id: 'np', autocomplete: 'new-password', required: 'required' });
+    const btn = h('button', { class: 'btn block', type: 'submit' }, 'Set new password');
+    const form = h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault(); err.textContent = ''; btn.disabled = true;
+        try { const r = await api('POST', '/api/admin/recover', { code: code.value, password: pw.value }); toast('Password changed. ' + r.codesLeft + ' recovery codes left.'); await boot(); }
+        catch (ex) { err.textContent = ex.message; }
+        btn.disabled = false;
+      },
+    }, h('p', { class: 'hint', style: 'text-align:left;margin-top:0', text: 'Enter one of the recovery codes you saved in Shop > Settings > Admin security, and choose a new password (at least 10 characters).' }),
+    h('div', { class: 'field' }, h('label', { for: 'rc', text: 'RECOVERY CODE' }), code),
+    h('div', { class: 'field' }, h('label', { for: 'np', text: 'NEW PASSWORD' }), pw), btn, err,
+    h('p', { class: 'hint' }, h('button', { type: 'button', style: 'background:none;border:0;text-decoration:underline;cursor:pointer;color:inherit', onclick: showLogin }, 'Back to login')));
+    app.replaceChildren(h('main', { class: 'wrap' },
+      h('div', { class: 'wordmark' }, 'MYLEBRAND', h('sup', null, '®')),
+      h('p', { class: 'eyebrow', text: 'Reset admin password' }),
+      h('div', { class: 'card' }, form)));
+    code.focus();
   }
 
   // ---------- data loading ----------
