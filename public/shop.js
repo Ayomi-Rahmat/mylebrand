@@ -32,9 +32,10 @@
   const img = (url, w) => (/^https:\/\/res\.cloudinary\.com\/.+\/upload\//.test(url) ? url.replace('/upload/', '/upload/f_auto,q_auto,w_' + w + '/') : url);
   const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { timeZone: TZ, day: 'numeric', month: 'short', year: 'numeric' });
   const fmtDay = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  function toast(msg, bad) {
-    const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: 'status', text: msg });
-    document.body.append(t); setTimeout(() => t.remove(), bad ? 5000 : 2200);
+  function toast(msg, bad, act) {
+    const t = h('div', { class: 'toast' + (bad ? ' bad' : ''), role: 'status' }, h('span', { text: msg }),
+      act ? h('button', { class: 'toast-act', type: 'button', onclick: () => { t.remove(); act.fn(); } }, act.label) : null);
+    document.body.append(t); setTimeout(() => t.remove(), bad ? 5000 : (act ? 4200 : 2200));
   }
   async function api(method, url, body) {
     const r = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
@@ -52,36 +53,98 @@
   const S = cat.settings;
   const wa = (text) => 'https://wa.me/' + S.whatsapp + (text ? '?text=' + encodeURIComponent(text) : '');
 
+  // ---------- modals ----------
+  const modals = [];
+  function openModal(content, opts) {
+    opts = opts || {};
+    const box = h('div', { class: 'mdl-box' + (opts.drawer ? ' drawer' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.label || 'Details', tabindex: '-1' },
+      h('button', { class: 'mdl-x', type: 'button', 'aria-label': 'Close', onclick: () => closeModal(m) }, '×'), content);
+    const bg = h('div', { class: 'mdl', onclick: (e) => { if (e.target === bg) closeModal(m); } }, box);
+    const m = { bg, prev: document.activeElement };
+    modals.push(m); document.body.append(bg); document.body.classList.add('noscroll');
+    const f = opts.focus && box.querySelector(opts.focus);
+    (f || box).focus();
+    return m;
+  }
+  function closeModal(m) {
+    const i = modals.indexOf(m); if (i < 0) return;
+    modals.splice(i, 1); m.bg.remove();
+    if (!modals.length) document.body.classList.remove('noscroll');
+    try { if (m.prev && m.prev.focus && document.body.contains(m.prev)) m.prev.focus(); } catch (e) { /* ignore */ }
+  }
+  function closeAllModals() { while (modals.length) closeModal(modals[modals.length - 1]); }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modals.length) closeModal(modals[modals.length - 1]); });
+
+  // typed quantity box: - [ 3 ] +
+  function numInput(value, o) {
+    let v = value;
+    const inp = h('input', { class: 'qin', type: 'text', inputmode: 'numeric', 'aria-label': 'Quantity', autocomplete: 'off', value: String(v) });
+    const clamp = (n) => Math.max(o.min, Math.min(o.max, n));
+    const commit = (n, redraw) => { v = clamp(n); if (redraw) inp.value = String(v); if (o.onChange) o.onChange(v); };
+    inp.addEventListener('input', () => {
+      const d = inp.value.replace(/\D/g, '').slice(0, 4);
+      if (d !== inp.value) inp.value = d;
+      if (d !== '') commit(Number(d), false);
+    });
+    inp.addEventListener('blur', () => { const n = clamp(inp.value === '' ? o.min : Number(inp.value)); inp.value = String(n); if (n !== v) commit(n, true); });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(inp.value === '' ? o.min : Number(inp.value), true); inp.blur(); if (o.onEnter) o.onEnter(); } });
+    inp.addEventListener('focus', () => inp.select());
+    const el = h('div', { class: 'stepper' },
+      h('button', { type: 'button', 'aria-label': 'Less', onclick: () => commit(v - 1, true) }, '−'), inp,
+      h('button', { type: 'button', 'aria-label': 'More', onclick: () => commit(v + 1, true) }, '+'));
+    return { el, get: () => v, set: (n) => { v = clamp(n); inp.value = String(v); } };
+  }
+
   // ---------- cart ----------
   let syncTimer = null;
+  let wListeners = [];      // pages that react to wholesale cart changes
+  let wcart = [];           // wholesale: [{k, line, name, qty}]
+  try { wcart = JSON.parse(localStorage.getItem('mb_wcart') || '[]'); } catch (e) { wcart = []; }
+  if (!Array.isArray(wcart)) wcart = [];
   function saveCart() {
     try { localStorage.setItem('mb_cart', JSON.stringify(cart)); } catch (e) { /* private mode */ }
     if (me) { clearTimeout(syncTimer); syncTimer = setTimeout(() => api('PUT', '/api/cart', { items: cart }).catch(() => {}), 700); }
     paintCartCount();
   }
-  const cartCount = () => cart.reduce((n, i) => n + i.qty, 0);
+  function saveW() { try { localStorage.setItem('mb_wcart', JSON.stringify(wcart)); } catch (e) { /* ignore */ } paintCartCount(); wListeners.forEach((f) => f()); }
+  const cartCount = () => cart.reduce((n, i) => n + i.qty, 0) + wcart.length;
   function paintCartCount() {
     const b = document.querySelector('.cartbtn b');
     const n = cartCount();
     if (b) { b.textContent = n; b.style.display = n ? '' : 'none'; }
   }
+  function wItems() {
+    const out = [];
+    wcart.forEach((w) => {
+      const L = (cat.lines || {})[w.line]; const it = L && L.items.find((x) => x.name === w.name);
+      if (it && it.price) out.push({ w, L, it });
+    });
+    return out;
+  }
+  function addW(line, it, qty) {
+    const k = line + ':' + it.name;
+    const w = wcart.find((x) => x.k === k);
+    if (w) w.qty = Math.min(999, w.qty + qty); else wcart.push({ k, line, name: it.name, qty: Math.min(999, qty) });
+    saveW();
+    toast('Added to cart 🤍', false, { label: 'View cart', fn: openCart });
+  }
   function addToCart(id, qty) {
     const map = products();
     const info = map.get(id);
-    if (!info) return;
-    // one batch at a time: ordering from a second batch starts a fresh cart
+    if (!info) return false;
     const other = cart.find((i) => map.get(i.id) && map.get(i.id).b.id !== info.b.id);
-    if (other && !confirm('Your cart has items from another batch. Start a new cart with this item instead?')) return;
+    if (other && !confirm('Your cart has items from another batch. Start a new cart with this item instead?')) return false;
     if (other) cart = [];
     const line = cart.find((i) => i.id === id);
     if (line) line.qty = Math.min(50, line.qty + qty); else cart.push({ id, qty });
     saveCart();
-    toast('Added to cart 🤍');
+    toast('Added to cart 🤍', false, { label: 'View cart', fn: openCart });
+    return true;
   }
   function setQty(id, qty) {
     if (qty < 1) cart = cart.filter((i) => i.id !== id);
     else { const l = cart.find((i) => i.id === id); if (l) l.qty = Math.min(50, qty); }
-    saveCart(); route();
+    saveCart();
   }
   async function mergeServerCart() {
     try {
@@ -104,8 +167,10 @@
   }
   function afterAuth(c, next) {
     me = c; meLoaded = true;
+    closeAllModals();
     mergeServerCart().then(() => { paintHeader(); });
-    go(c.mustChange ? '/account' : (next || '/'));
+    const dest = c.mustChange ? '/account' : (next || '/');
+    if (dest === location.pathname + location.search || dest === location.pathname) route(); else go(dest);
   }
   async function refreshCatalog() {
     if (Date.now() - catAt < 45000) return;
@@ -121,8 +186,8 @@
       h('div', { class: 'wrap hdrrow' },
         h('a', { href: '/', class: 'logo', 'data-link': '' }, 'MYLEBRAND'),
         h('nav', { class: 'nav' },
-          me ? h('a', { href: '/account', 'data-link': '' }, me.name.split(' ')[0]) : h('a', { href: '/login', 'data-link': '' }, 'Log in'),
-          h('a', { href: '/cart', class: 'cartbtn', 'data-link': '' }, 'Cart', h('b', { text: String(cartCount()), style: cartCount() ? '' : 'display:none' })))),
+          me ? h('a', { href: '/account', 'data-link': '' }, me.name.split(' ')[0]) : h('a', { href: '/login', onclick: (e) => { e.preventDefault(); openAuth('login', location.pathname + location.search); } }, 'Log in'),
+          h('a', { href: '/cart', class: 'cartbtn', onclick: (e) => { e.preventDefault(); openCart(); } }, 'Cart', h('b', { text: String(cartCount()), style: cartCount() ? '' : 'display:none' })))),
       h('div', { class: 'tabs' }, h('div', { class: 'wrap tabsrow' },
         tab('/', 'Curated batch', curated), tab('/beauty', 'Beauty wholesale', p === '/beauty'), tab('/interiors', 'Interiors', p === '/interiors'),
         me ? tab('/orders', 'My orders', p === '/orders' || p.startsWith('/order/')) : null)));
@@ -145,19 +210,14 @@
 
   // ---------- pieces ----------
   function productCard(p, b) {
-    const closed = b && !b.open;
-    return h('a', { class: 'pcard' + (p.soldOut ? ' soldout' : ''), href: '/p/' + p.slug, 'data-link': '' },
+    return h('a', { class: 'pcard' + (p.soldOut ? ' soldout' : ''), href: '/p/' + p.slug,
+      onclick: (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; e.preventDefault(); openProduct(p); } },
       h('div', { class: 'ph' },
         p.images[0] ? h('img', { src: img(p.images[0].url, 500), alt: p.name, loading: 'lazy', width: 500, height: 625 }) : h('div', { class: 'noimg', text: '✦' }),
-        p.soldOut ? h('span', { class: 'badge sold', text: 'Sold out' }) : (closed ? null : null),
+        p.soldOut ? h('span', { class: 'badge sold', text: 'Sold out' }) : null,
         p.kind === 'box' ? h('span', { class: 'badge box', text: 'Box' }) : null),
       h('div', { class: 'nm', text: p.name }),
       h('div', { class: 'pr' }, naira(p.price), p.compareAt ? h('s', { text: naira(p.compareAt) }) : null));
-  }
-  function stepper(val, on) {
-    return h('div', { class: 'stepper' },
-      h('button', { type: 'button', 'aria-label': 'Less', onclick: () => on(val - 1) }, '−'), h('span', { text: String(val) }),
-      h('button', { type: 'button', 'aria-label': 'More', onclick: () => on(val + 1) }, '+'));
   }
   function giftNote() {
     const t = Number(S.gift_threshold), n = Number(S.gift_slots);
@@ -256,80 +316,184 @@
       chips, e.products.length ? grid : h('p', { class: 'muted', text: 'Pieces are being added. Check back soon.' })));
   }
 
+  function gallery(images, name) {
+    let cur = 0;
+    const main = h('div', { class: 'main' });
+    const ths = h('div', { class: 'ths' });
+    const draw = () => {
+      main.replaceChildren(images[cur] ? h('img', { src: img(images[cur].url, 900), alt: name, width: 900, height: 1125 }) : h('div', { class: 'noimg', text: '✦' }));
+      ths.replaceChildren(...(images.length > 1 ? images.map((im, i) => h('button', { type: 'button', class: i === cur ? 'on' : '', 'aria-label': 'Photo ' + (i + 1), onclick: () => { cur = i; draw(); } }, h('img', { src: img(im.url, 128), alt: '' }))) : []));
+    };
+    draw();
+    return h('div', { class: 'gal' }, main, ths);
+  }
+  function boxList(p) {
+    return p.kind === 'box' && p.items ? h('div', { class: 'boxlist' }, h('b', { text: 'Inside the box' }),
+      p.items.map((it) => h('div', { class: 'it' }, it.thumb ? h('img', { src: img(it.thumb, 96), alt: '' }) : null, h('span', { style: 'flex:1', text: it.name }), h('span', { class: 'muted', text: '× ' + it.qty })))) : null;
+  }
+  // quantity box + add button (used in the popup and on the product page)
+  function buyPanel(p, b) {
+    if (p.soldOut) return h('div', { class: 'notice' }, 'This one is sold out. ', h('a', { href: wa('Hi MYLEBRAND! Please let me know if "' + p.name + '" comes back 🤍'), target: '_blank', rel: 'noopener' }, 'Ask us on WhatsApp'), ' if it returns.');
+    if (!b.open) return h('div', { class: 'notice' }, 'Preorders for ' + b.name + ' are closed. ', h('a', { href: S.community || wa('Hi MYLEBRAND! 🤍'), target: '_blank', rel: 'noopener' }, 'Join the list'), ' for the next batch.');
+    const btn = h('button', { class: 'btn grow', type: 'button' }, 'Add to cart · ' + naira(p.price));
+    const q = numInput(1, { min: 1, max: 50, onChange: (n) => { btn.textContent = 'Add to cart · ' + naira(p.price * n); }, onEnter: () => btn.click() });
+    btn.addEventListener('click', () => { if (addToCart(p.id, q.get())) { q.set(1); btn.textContent = 'Add to cart · ' + naira(p.price); } });
+    return h('div', { class: 'buyrow' }, q.el, btn);
+  }
+  function deliveryNote(b) {
+    return h('p', { class: 'small muted', style: 'margin-top:14px', text: 'Preorder item. Delivery ' + (b.deliveryFrom ? 'from ' + fmtDay(b.deliveryFrom) + (b.deliveryTo ? ' to ' + fmtDay(b.deliveryTo) : '') : 'dates are shared once the batch ships') + '.' });
+  }
+  function openProduct(p) {
+    const info = products().get(p.id);
+    if (!info) return go('/p/' + p.slug);
+    const { b, e } = info;
+    const m = openModal(h('div', { class: 'pmodal' },
+      gallery(p.images, p.name),
+      h('div', { class: 'pinfo' },
+        h('div', { class: 'eyebrow', text: p.kind === 'box' ? 'A MYLEBRAND box' : (p.category || e.name) }),
+        h('h2', { text: p.name }),
+        h('div', { class: 'price' }, naira(p.price), p.compareAt ? [h('s', { text: naira(p.compareAt) }), ' ', h('em', { class: 'off', text: '-' + Math.round((1 - p.price / p.compareAt) * 100) + '%' })] : null),
+        p.desc ? h('div', { class: 'desc', text: p.desc }) : h('p', { class: 'muted', text: 'Chosen with intention for this batch.' }),
+        boxList(p), buyPanel(p, b), deliveryNote(b),
+        h('a', { class: 'small', href: '/p/' + p.slug, 'data-link': '' }, 'See the full page'))), { label: p.name, focus: '.qin' });
+    return m;
+  }
+
   function pageProduct(slug) {
     const f = findProd(slug);
     if (!f) return pageNotFound();
     const { b, e, p } = f;
     document.title = p.name + ' | MYLEBRAND';
-    let qty = 1, cur = 0;
-    const main = h('div', { class: 'main' });
-    const ths = h('div', { class: 'ths' });
-    const drawG = () => {
-      main.replaceChildren(p.images[cur] ? h('img', { src: img(p.images[cur].url, 900), alt: p.name, width: 900, height: 1125 }) : h('div', { class: 'noimg', text: '✦' }));
-      ths.replaceChildren(...(p.images.length > 1 ? p.images.map((im, i) => h('button', { class: i === cur ? 'on' : '', 'aria-label': 'Photo ' + (i + 1), onclick: () => { cur = i; drawG(); } }, h('img', { src: img(im.url, 128), alt: '' }))) : []));
-    };
-    drawG();
-    const buy = h('div');
-    const drawBuy = () => {
-      buy.replaceChildren();
-      if (p.soldOut) buy.append(h('div', { class: 'notice' }, 'This one is sold out. ', h('a', { href: wa('Hi MYLEBRAND! Please let me know if "' + p.name + '" comes back 🤍'), target: '_blank', rel: 'noopener' }, 'Ask us on WhatsApp'), ' if it returns.'));
-      else if (!b.open) buy.append(h('div', { class: 'notice' }, 'Preorders for ' + b.name + ' are closed. ', h('a', { href: S.community || wa('Hi MYLEBRAND! 🤍'), target: '_blank', rel: 'noopener' }, 'Join the list'), ' for the next batch.'));
-      else buy.append(h('div', { class: 'row', style: 'display:flex;gap:14px;align-items:center;flex-wrap:wrap' },
-        stepper(qty, (n) => { qty = Math.max(1, Math.min(50, n)); drawBuy(); }),
-        h('button', { class: 'btn', style: 'flex:1;min-width:180px', onclick: () => addToCart(p.id, qty) }, 'Add to cart · ' + naira(p.price * qty))));
-    };
-    drawBuy();
     const others = e.products.filter((x) => x.id !== p.id).slice(0, 4);
     shell(h('div', { class: 'wrap' },
       h('div', { class: 'crumbs' }, h('a', { href: '/', 'data-link': '' }, 'Shop'), ' / ', h('a', { href: '/e/' + e.slug, 'data-link': '' }, e.name), ' / ', p.name),
-      h('div', { class: 'pdp' }, h('div', { class: 'gal' }, main, ths),
+      h('div', { class: 'pdp' }, gallery(p.images, p.name),
         h('div', null, h('div', { class: 'eyebrow', text: p.kind === 'box' ? 'A MYLEBRAND box' : (p.category || e.name) }), h('h1', { style: 'font-size:clamp(2rem,5vw,2.8rem);margin:8px 0', text: p.name }),
           h('div', { class: 'price' }, naira(p.price), p.compareAt ? h('s', { text: naira(p.compareAt) }) : null),
           p.desc ? h('div', { class: 'desc', text: p.desc }) : null,
-          p.kind === 'box' && p.items ? h('div', { class: 'boxlist' }, h('b', { text: 'Inside the box' }),
-            p.items.map((it) => h('a', { class: 'it', href: '/p/' + it.slug, 'data-link': '', style: 'text-decoration:none' },
-              it.thumb ? h('img', { src: img(it.thumb, 96), alt: '' }) : null, h('span', { style: 'flex:1', text: it.name }), h('span', { class: 'muted', text: '× ' + it.qty })))) : null,
-          buy, h('p', { class: 'small muted', style: 'margin-top:18px', text: 'Preorder item. Delivery ' + (b.deliveryFrom ? 'from ' + fmtDay(b.deliveryFrom) + (b.deliveryTo ? ' to ' + fmtDay(b.deliveryTo) : '') : 'dates are shared once the batch ships') + '.' }))),
+          boxList(p), buyPanel(p, b), deliveryNote(b))),
       others.length ? h('section', null, h('h2', { style: 'margin-bottom:18px', text: 'More from ' + e.name }), h('div', { class: 'grid four' }, others.map((x) => productCard(x, b)))) : null));
   }
 
+  // ---------- cart (drawer + /cart page) ----------
   function cartLines() {
     const map = products();
     return cart.map((i) => ({ ...i, info: map.get(i.id) }));
   }
-  function pageCart() {
-    document.title = 'Your cart | MYLEBRAND';
+  function wMessage(items) {
+    const groups = {};
+    items.forEach((x) => { (groups[x.w.line] = groups[x.w.line] || []).push(x); });
+    const keys = Object.keys(groups);
+    const lines = ['Hi MYLEBRAND! 🤍 I would like to order:'];
+    let total = 0;
+    keys.forEach((k) => {
+      const g = groups[k]; const sub = g.reduce((t, x) => t + x.it.price * x.w.qty, 0); total += sub;
+      lines.push('', g[0].L.title + ':');
+      g.forEach((x) => lines.push(x.w.qty + ' x ' + x.it.name + ' (' + naira(x.it.price) + ' each)'));
+      if (keys.length > 1) lines.push('Subtotal: ' + naira(sub));
+    });
+    lines.push('', 'Total: ' + naira(total), keys.map((k) => (k === 'beauty' ? '[BW]' : '[IN]')).join(' '));
+    return lines.join('\n');
+  }
+  function thumb(url, w) { return url ? h('img', { class: 'cthumb', src: img(url, w || 160), alt: '' }) : h('div', { class: 'cthumb noimg', text: '✦' }); }
+
+  function wSection(repaint) {
+    const items = wItems();
+    const sec = h('div', { class: 'csec' });
+    const foot = h('div', { class: 'cfoot' });
+    const drawFoot = () => {
+      const cur = wItems();
+      const total = cur.reduce((t, x) => t + x.it.price * x.w.qty, 0);
+      const bw = cur.filter((x) => x.w.line === 'beauty');
+      const profit = bw.length && bw.every((x) => x.it.resale) ? bw.reduce((t, x) => t + (x.it.resale - x.it.price) * x.w.qty, 0) : null;
+      const short = cur.filter((x) => x.it.minQty && x.w.qty < x.it.minQty).map((x) => x.it.name + ' (minimum ' + x.it.minQty + ')');
+      foot.replaceChildren(...[
+        h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: 'Wholesale total' }), h('span', { text: naira(total) })),
+        profit !== null ? h('div', { class: 'totalrow gain', style: 'border-top:0;font-size:1.05rem' }, h('span', { text: 'If you sell all your beauty items' }), h('span', { text: '+' + naira(profit) + ' profit' })) : null,
+        short.length ? h('div', { class: 'notice', text: 'Minimum not reached: ' + short.join(', ') }) : null,
+        h('a', { class: 'btn wa block' + (short.length ? ' disabled' : ''), 'aria-disabled': short.length ? 'true' : null, href: short.length ? null : wa(wMessage(cur)), target: short.length ? null : '_blank', rel: 'noopener' }, 'Send my order on WhatsApp')].filter(Boolean));
+    };
+    sec.append(h('h3', { text: 'Wholesale order' }), h('p', { class: 'small muted', style: 'margin:0 0 6px', text: 'No account needed. Your order is written for you on WhatsApp.' }));
+    items.forEach(({ w, L, it }) => {
+      const lt = h('div', { class: 'cright-t', text: naira(it.price * w.qty) });
+      const q = numInput(w.qty, { min: 1, max: 999, onChange: (n) => { w.qty = n; saveW(); lt.textContent = naira(it.price * n); drawFoot(); } });
+      sec.append(h('div', { class: 'cline' }, thumb((it.images || [])[0] && it.images[0].url),
+        h('div', { class: 'grow' }, h('div', { class: 'nm', text: it.name }), h('div', { class: 'muted small', text: L.title + ' · ' + naira(it.price) + ' each' + (it.minQty ? ' · min ' + it.minQty : '') }),
+          h('button', { class: 'linkbtn', type: 'button', onclick: () => { wcart = wcart.filter((x) => x !== w); saveW(); repaint(); } }, 'Remove')),
+        h('div', { class: 'cright' }, q.el, lt)));
+    });
+    sec.append(foot); drawFoot();
+    return sec;
+  }
+
+  function cSection(repaint) {
     const lines = cartLines();
     const live = lines.filter((l) => l.info && !l.info.p.soldOut);
     const bad = lines.filter((l) => !l.info || l.info.p.soldOut);
-    if (!lines.length) return shell(h('div', { class: 'narrow page empty' }, h('div', { class: 'big', text: '🛍' }), h('h1', { text: 'Your cart is empty' }), h('p', { class: 'muted', text: 'Find something you love.' }), h('a', { class: 'btn', href: '/', 'data-link': '' }, 'Browse the shop')));
-    const total = live.reduce((t, l) => t + l.info.p.price * l.qty, 0);
     const b = live[0] && live[0].info.b;
     const thr = Number(S.gift_threshold), slots = Number(S.gift_slots);
-    shell(h('div', { class: 'narrow page' }, h('h1', { text: 'Your cart' }),
-      bad.length ? h('div', { class: 'notice bad' }, 'Some items are sold out or no longer available. Remove them to continue.') : null,
-      b && !b.open ? h('div', { class: 'notice bad' }, 'Preorders for ' + b.name + ' are closed.') : null,
-      h('div', { class: 'card' }, lines.map((l) => {
-        const p = l.info && l.info.p;
-        return h('div', { class: 'line' },
-          p && p.images[0] ? h('img', { src: img(p.images[0].url, 160), alt: '' }) : h('div', { class: 'noimg', style: 'width:64px;height:80px;flex:none;background:#dcd3c0;border-radius:10px', text: '✦' }),
-          h('div', { class: 'grow' }, h('div', { class: 'nm', text: p ? p.name : 'Item no longer available' }),
-            p ? h('div', { class: 'muted small', text: p.soldOut ? 'Sold out' : naira(p.price) + ' each' }) : null,
-            h('button', { class: 'linkbtn', onclick: () => setQty(l.id, 0) }, 'Remove')),
-          p && !p.soldOut ? h('div', null, stepper(l.qty, (n) => setQty(l.id, n)), h('div', { style: 'text-align:right;margin-top:6px;font-weight:600', text: naira(p.price * l.qty) })) : null);
-      }), h('div', { class: 'totalrow' }, h('span', { text: 'Total' }), h('span', { text: naira(total) }))),
-      thr && slots && b && b.open ? h('div', { class: 'notice ok' }, total >= thr ? '🎁 Your order qualifies for the gift (limited spots, first come first served).' : 'Add ' + naira(thr - total) + ' more to qualify for ' + (S.gift_text || 'a gift') + '.') : null,
-      h('button', { class: 'btn block', disabled: !live.length || bad.length > 0 || (b && !b.open), onclick: () => go(me ? '/checkout' : '/login?next=/checkout') }, me ? 'Checkout' : 'Log in to checkout'),
-      !me ? h('p', { class: 'small muted center', style: 'margin-top:12px' }, 'New here? ', h('a', { href: '/signup?next=/checkout', 'data-link': '' }, 'Create an account'), ' in a minute. Your cart is saved.') : null));
+    const sec = h('div', { class: 'csec' });
+    const foot = h('div', { class: 'cfoot' });
+    const drawFoot = () => {
+      const total = live.reduce((t, l) => t + l.info.p.price * l.qty, 0);
+      const blocked = !live.length || bad.length > 0 || (b && !b.open);
+      foot.replaceChildren(...[
+        bad.length ? h('div', { class: 'notice bad' }, 'Some items are sold out or no longer available. Remove them to continue.') : null,
+        b && !b.open ? h('div', { class: 'notice bad' }, 'Preorders for ' + b.name + ' are closed.') : null,
+        h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: 'Total' }), h('span', { text: naira(total) })),
+        thr && slots && b && b.open ? h('div', { class: 'notice ok' }, total >= thr ? '🎁 Your order qualifies for the gift (limited spots, first come first served).' : 'Add ' + naira(thr - total) + ' more to qualify for ' + (S.gift_text || 'a gift') + '.') : null,
+        h('button', { class: 'btn block', type: 'button', disabled: blocked, onclick: () => { if (me) go('/checkout'); else openAuth('signup', '/checkout'); } }, me ? 'Checkout' : 'Log in to checkout'),
+        !me ? h('p', { class: 'small muted center', style: 'margin:10px 0 0', text: 'Your cart is saved. It takes a minute to make an account.' }) : null].filter(Boolean));
+    };
+    sec.append(h('h3', { text: 'Preorder items' }));
+    lines.forEach((l) => {
+      const p = l.info && l.info.p;
+      const lt = h('div', { class: 'cright-t', text: p ? naira(p.price * l.qty) : '' });
+      const q = p && !p.soldOut ? numInput(l.qty, { min: 1, max: 50, onChange: (n) => { setQty(l.id, n); l.qty = n; lt.textContent = naira(p.price * n); drawFoot(); } }) : null;
+      sec.append(h('div', { class: 'cline' }, thumb(p && p.images[0] && p.images[0].url),
+        h('div', { class: 'grow' }, h('div', { class: 'nm', text: p ? p.name : 'Item no longer available' }),
+          p ? h('div', { class: 'muted small', text: p.soldOut ? 'Sold out' : naira(p.price) + ' each' }) : null,
+          h('button', { class: 'linkbtn', type: 'button', onclick: () => { setQty(l.id, 0); repaint(); } }, 'Remove')),
+        q ? h('div', { class: 'cright' }, q.el, lt) : null));
+    });
+    sec.append(foot); drawFoot();
+    return sec;
   }
 
-  function authPage(mode) {
-    const signup = mode === 'signup';
-    document.title = (signup ? 'Create account' : 'Log in') + ' | MYLEBRAND';
-    const next = new URLSearchParams(location.search).get('next');
-    const safeNext = next && /^\/[a-z]/i.test(next) && !next.startsWith('//') ? next : '/';
+  function cartView(onClose, asPage) {
+    const root = h('div', { class: 'cartview' });
+    const paint = () => {
+      const wi = wItems();
+      wcart = wcart.filter((w) => wi.some((x) => x.w === w)); // drop wholesale items that no longer exist
+      const empty = !cart.length && !wcart.length;
+      root.replaceChildren(...[
+        h(asPage ? 'h1' : 'h2', { text: 'Your cart' }),
+        empty ? h('div', { class: 'empty' }, h('div', { class: 'big', text: '🛍' }), h('p', { class: 'muted', text: 'Your cart is empty. Find something you love.' }),
+          h('a', { class: 'btn', href: '/', 'data-link': '' }, 'Browse the shop')) : null,
+        wcart.length ? wSection(paint) : null,
+        cart.length ? cSection(paint) : null,
+      ].filter(Boolean));
+      paintCartCount();
+    };
+    paint();
+    return root;
+  }
+  let cartModal = null;
+  function openCart() {
+    if (location.pathname === '/cart') return;
+    if (cartModal && modals.includes(cartModal)) return;
+    closeAllModals();
+    cartModal = openModal(cartView(), { drawer: true, label: 'Your cart' });
+  }
+  function pageCart() {
+    document.title = 'Your cart | MYLEBRAND';
+    shell(h('div', { class: 'narrow page' }, cartView(null, true)));
+  }
+
+  // ---------- login / sign up (page and popup share this form) ----------
+  function authForm(signup, safeNext) {
     const f = {};
-    const inp = (id, type, label, extra) => { f[id] = h('input', { id, type, required: '', ...extra }); return h('div', { class: 'field' }, h('label', { for: id, text: label }), f[id]); };
+    const inp = (id, type, label, extra) => { f[id] = h('input', { id: 'au_' + id, type, required: '', ...extra }); return h('div', { class: 'field' }, h('label', { for: 'au_' + id, text: label }), f[id]); };
     const err = h('p', { class: 'err', role: 'alert' });
     const btn = h('button', { class: 'btn block', type: 'submit' }, signup ? 'Create my account' : 'Log in');
     const trap = h('input', { type: 'text', name: 'website', tabindex: '-1', autocomplete: 'off', class: 'sr', 'aria-hidden': 'true' });
@@ -348,13 +512,39 @@
     signup ? inp('phone', 'tel', 'Phone / WhatsApp number', { autocomplete: 'tel', placeholder: '0803 123 4567' }) : null,
     inp('password', 'password', signup ? 'Choose a password (8+ characters)' : 'Password', { autocomplete: signup ? 'new-password' : 'current-password' }),
     trap, btn, err);
+    return { form, first: f.name || f.email };
+  }
+  const forgotNote = () => h('p', { class: 'center small muted' }, 'Forgot your password? ', h('a', { href: wa('Hi MYLEBRAND! I forgot my password. Please reset it for me 🤍'), target: '_blank', rel: 'noopener' }, 'Message us on WhatsApp'), ' and we will send you a temporary one.');
+  function openAuth(mode, next) {
+    const safeNext = next && /^\/[a-z]/i.test(next) && !next.startsWith('//') ? next : '/';
+    const box = h('div', { class: 'authbox' });
+    const draw = (m) => {
+      const signup = m === 'signup';
+      const { form, first } = authForm(signup, safeNext);
+      box.replaceChildren(h('h2', { text: signup ? 'Create your account' : 'Welcome back' }),
+        h('p', { class: 'muted', style: 'margin-top:0', text: signup ? 'One account to place orders and follow them from China to your door.' : 'Log in to place orders and track them.' }),
+        form,
+        h('p', { class: 'center small' }, signup ? 'Already have an account? ' : 'New to MYLEBRAND? ', h('button', { class: 'linkbtn', type: 'button', onclick: () => { draw(signup ? 'login' : 'signup'); } }, signup ? 'Log in' : 'Create an account')),
+        signup ? null : forgotNote());
+      first.focus();
+    };
+    closeAllModals();
+    openModal(box, { label: 'Account' });
+    draw(mode);
+  }
+  function authPage(mode) {
+    const signup = mode === 'signup';
+    document.title = (signup ? 'Create account' : 'Log in') + ' | MYLEBRAND';
+    const next = new URLSearchParams(location.search).get('next');
+    const safeNext = next && /^\/[a-z]/i.test(next) && !next.startsWith('//') ? next : '/';
+    const { form, first } = authForm(signup, safeNext);
     shell(h('div', { class: 'narrow page' }, h('h1', { text: signup ? 'Create your account' : 'Welcome back' }),
       h('p', { class: 'muted', text: signup ? 'One account to place orders and follow them from China to your door.' : 'Log in to place orders and track them.' }),
       h('div', { class: 'card' }, form),
       h('p', { class: 'center small' }, signup ? ['Already have an account? ', h('a', { href: '/login' + (next ? '?next=' + encodeURIComponent(safeNext) : ''), 'data-link': '' }, 'Log in')]
         : ['New to MYLEBRAND? ', h('a', { href: '/signup' + (next ? '?next=' + encodeURIComponent(safeNext) : ''), 'data-link': '' }, 'Create an account')]),
-      signup ? null : h('p', { class: 'center small muted' }, 'Forgot your password? ', h('a', { href: wa('Hi MYLEBRAND! I forgot my password. Please reset it for me 🤍'), target: '_blank', rel: 'noopener' }, 'Message us on WhatsApp'), ' and we will send you a temporary one.')));
-    if (f.name) f.name.focus(); else f.email.focus();
+      signup ? null : forgotNote()));
+    first.focus();
   }
 
   function pageCheckout() {
@@ -483,6 +673,38 @@
 
 
   // ---------- wholesale landing pages (QR codes open these) ----------
+  function wFacts(it, beauty) {
+    const facts = [];
+    if (it.price) {
+      const pct = it.oldPrice && it.oldPrice > it.price ? Math.round((1 - it.price / it.oldPrice) * 100) : 0;
+      facts.push(h('span', null, h('i', { text: beauty ? 'You pay' : 'Price' }), ' ', h('b', { text: naira(it.price) }), pct ? [' ', h('s', { class: 'muted', text: naira(it.oldPrice) }), ' ', h('em', { class: 'off', text: '-' + pct + '%' })] : null));
+    }
+    if (it.resale) facts.push(h('span', null, h('i', { text: 'You sell at' }), ' ', naira(it.resale)));
+    if (it.price && it.resale) facts.push(h('span', { class: 'gain' }, h('i', { text: 'Profit each' }), ' +' + naira(it.resale - it.price)));
+    if (it.minQty) facts.push(h('span', null, h('i', { text: 'Minimum' }), ' ' + it.minQty + ' pcs'));
+    return facts;
+  }
+  // typed quantity + Add to cart for one wholesale item
+  function wBuy(line, it) {
+    if (!it.price) return h('div', { class: 'notice' }, 'Price on request. ', h('a', { href: wa('Hi MYLEBRAND! 🤍 What is the price of ' + it.name + '? [' + (line === 'beauty' ? 'BW' : 'IN') + ']'), target: '_blank', rel: 'noopener' }, 'Ask us on WhatsApp'));
+    const start = it.minQty || 1;
+    const btn = h('button', { class: 'btn grow', type: 'button' }, 'Add to cart · ' + naira(it.price * start));
+    const q = numInput(start, { min: 1, max: 999, onChange: (n) => { btn.textContent = 'Add to cart · ' + naira(it.price * n); }, onEnter: () => btn.click() });
+    btn.addEventListener('click', () => { addW(line, it, q.get()); });
+    return h('div', { class: 'buyrow' }, q.el, btn);
+  }
+  function openWItem(line, it) {
+    const L = cat.lines[line]; const beauty = line === 'beauty';
+    openModal(h('div', { class: 'pmodal' },
+      gallery(it.images || [], it.name),
+      h('div', { class: 'pinfo' },
+        h('div', { class: 'eyebrow', text: L.title }),
+        h('h2', { text: it.name }),
+        it.note ? h('p', { class: 'muted', style: 'margin:0 0 8px', text: it.note }) : null,
+        it.desc ? h('div', { class: 'desc', text: it.desc }) : null,
+        h('div', { class: 'wfacts', style: 'margin:10px 0 14px' }, wFacts(it, beauty)),
+        wBuy(line, it))), { label: it.name, focus: '.qin' });
+  }
   function pageLine(line) {
     const L = (cat.lines || {})[line];
     if (!L) return pageNotFound();
@@ -492,49 +714,28 @@
     const group = L.groupLink || S.community;
     const hello = 'Hi MYLEBRAND! 🤍 I am interested in ' + L.title.toLowerCase() + '. Please send me the ' + (beauty ? 'price list' : 'details') + '. [' + tag + ']';
     const live = L.deadline && Date.parse(L.deadline + 'T23:59:59+01:00') > Date.now();
-    const qty = L.items.map(() => 0);
-    const hasPrices = L.items.some((i) => i.price);
-    const box = h('div');
-    const draw = () => {
-      let cost = 0, sell = 0, allResale = true, picked = [];
-      L.items.forEach((it, i) => {
-        if (!qty[i] || !it.price) return;
-        cost += it.price * qty[i]; picked.push(qty[i] + ' x ' + it.name);
-        if (it.resale) sell += it.resale * qty[i]; else allResale = false;
-      });
-      const short = L.items.map((it, i) => (qty[i] && it.minQty && qty[i] < it.minQty ? it.name + ' (minimum ' + it.minQty + ')' : null)).filter(Boolean);
-      const order = 'Hi MYLEBRAND! 🤍 I would like to order:\n' + picked.join('\n') + '\nTotal: ' + naira(cost) + '\n[' + tag + ']';
-      const rows = L.items.map((it, i) => {
-        const facts = [];
-        if (it.price) {
-          const pct = it.oldPrice && it.oldPrice > it.price ? Math.round((1 - it.price / it.oldPrice) * 100) : 0;
-          facts.push(h('span', null, h('i', { text: beauty ? 'You pay' : 'Price' }), ' ', h('b', { text: naira(it.price) }), pct ? [' ', h('s', { class: 'muted', text: naira(it.oldPrice) }), ' ', h('em', { class: 'off', text: '-' + pct + '%' })] : null));
-        }
-        if (it.resale) facts.push(h('span', null, h('i', { text: 'You sell at' }), ' ', naira(it.resale)));
-        if (it.price && it.resale) facts.push(h('span', { class: 'gain' }, h('i', { text: 'Profit each' }), ' +' + naira(it.resale - it.price)));
-        if (it.minQty) facts.push(h('span', null, h('i', { text: 'Minimum' }), ' ' + it.minQty + ' pcs'));
-        const im = (it.images || [])[0];
-        return h('div', { class: 'wrow' },
-          im ? h('img', { class: 'wimg', src: img(im.url, 200), alt: it.name, loading: 'lazy' }) : null,
-          h('div', { class: 'wmain' }, h('b', { text: it.name }), it.note ? h('span', { class: 'small muted', text: ' · ' + it.note }) : null,
-            it.desc ? h('div', { class: 'small muted wdesc', text: it.desc }) : null,
-            facts.length ? h('div', { class: 'wfacts' }, facts) : h('div', { class: 'small muted', text: 'Price on request. Ask us on WhatsApp.' })),
-          it.price ? stepper(qty[i], (n) => { qty[i] = Math.max(0, Math.min(999, n)); draw(); }) : null);
-      });
-      box.replaceChildren(...[
-        h('div', { class: 'wlist' }, rows),
-        L.minNote ? h('p', { class: 'small muted', text: L.minNote }) : null,
-        hasPrices ? h('div', { class: 'card calc' },
-          h('h3', { text: 'Your order' }),
-          picked.length ? [
-            h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: beauty ? 'You pay' : 'Total' }), h('span', { text: naira(cost) })),
-            beauty && allResale ? h('div', { class: 'totalrow gain', style: 'font-size:1.1rem;border-top:0' }, h('span', { text: 'If you sell everything' }), h('span', { text: '+' + naira(sell - cost) + ' profit' })) : null,
-            short.length ? h('div', { class: 'notice', text: 'Minimum not reached: ' + short.join(', ') }) : null,
-            h('a', { class: 'btn wa block', href: wa(order), target: '_blank', rel: 'noopener' }, 'Send my order on WhatsApp'),
-          ] : h('p', { class: 'muted', style: 'margin:0', text: beauty ? 'Tap + next to a product to see what you would pay and how much you could earn.' : 'Tap + next to a product to build your order.' })) : null,
-      ].filter(Boolean));
+    const sum = h('div');
+    const paintSum = () => {
+      const mine = wItems().filter((x) => x.w.line === line);
+      const total = mine.reduce((t, x) => t + x.it.price * x.w.qty, 0);
+      sum.replaceChildren(h('div', { class: 'card calc' }, h('h3', { text: 'Your order' }),
+        mine.length ? [h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: mine.length + ' item' + (mine.length === 1 ? '' : 's') + ' in your cart' }), h('span', { text: naira(total) })),
+          h('button', { class: 'btn block', type: 'button', onclick: openCart }, 'Open cart and send order')]
+          : h('p', { class: 'muted', style: 'margin:0', text: 'Set a quantity, tap Add to cart, then send your whole order on WhatsApp in one go.' })));
     };
-    draw();
+    wListeners = [paintSum];
+    paintSum();
+    const rows = L.items.map((it) => {
+      const facts = wFacts(it, beauty);
+      const im = (it.images || [])[0];
+      const open = () => openWItem(line, it);
+      return h('div', { class: 'wrow' },
+        h('button', { class: 'wimgbtn', type: 'button', 'aria-label': 'View ' + it.name, onclick: open }, im ? h('img', { class: 'wimg', src: img(im.url, 200), alt: it.name, loading: 'lazy' }) : h('div', { class: 'wimg noimg', text: '✦' })),
+        h('div', { class: 'wmain' }, h('button', { class: 'wname', type: 'button', onclick: open, text: it.name }), it.note ? h('span', { class: 'small muted', text: ' · ' + it.note }) : null,
+          it.desc ? h('div', { class: 'small muted wdesc', text: it.desc }) : null,
+          facts.length ? h('div', { class: 'wfacts' }, facts) : h('div', { class: 'small muted', text: 'Price on request. Ask us on WhatsApp.' })),
+        h('div', { class: 'wact' }, wBuy(line, it)));
+    });
     shell(
       h('section', { class: 'hero', style: 'padding:0' }, h('div', { class: 'wrap' },
         h('div', { class: 'eyebrow', text: beauty ? 'MYLEBRAND · Student wholesale' : 'MYLEBRAND · Interiors' }),
@@ -548,9 +749,11 @@
           h('div', null, h('b', { text: L.bonus }), live || L.spots ? h('div', { class: 'small', text: [L.spots ? 'Limited to the first ' + L.spots + ' students.' : '', live ? 'Ends ' + fmtDay(L.deadline) + '.' : ''].filter(Boolean).join(' ') }) : null)) : null,
         h('section', { style: 'padding-bottom:20px' },
           h('div', { class: 'sechead' }, h('div', { class: 'eyebrow', text: beauty ? 'Price list' : 'Available now' }), h('h2', { text: beauty ? 'What you pay, what you earn' : 'Pick what you like' })),
-          box),
+          rows.length ? h('div', { class: 'wlist' }, rows) : h('p', { class: 'muted', text: 'New stock is being added. Join the group to see it first.' }),
+          L.minNote ? h('p', { class: 'small muted', text: L.minNote }) : null,
+          sum),
         h('section', { style: 'padding-top:10px' },
-          h('div', { class: 'steps three' }, [['Choose', beauty ? 'Pick what you want to sell and see your profit.' : 'Pick the pieces you want.'], ['Order on WhatsApp', 'Tap the button. Your order is written for you.'], ['We confirm', 'We confirm your order and tell you how you will get it.']]
+          h('div', { class: 'steps three' }, [['Choose', beauty ? 'Tap a product for details. Set how many you want.' : 'Tap a piece for details. Set how many you want.'], ['Order on WhatsApp', 'Open your cart. Your order is written for you.'], ['We confirm', 'We confirm your order and tell you how you will get it.']]
             .map(([t, d]) => h('div', { class: 'step' }, h('b', { text: t }), h('span', { class: 'muted', text: d }))))),
         h('div', { class: 'card center', style: 'margin-top:26px' }, h('h3', { text: 'Not sure yet?' }), h('p', { class: 'muted', text: 'Join the group to see new stock and prices first.' }),
           h('div', { style: 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap' },
@@ -568,6 +771,7 @@
   function go(url) { history.pushState({}, '', url); route(); window.scrollTo(0, 0); }
   async function route() {
     const path = location.pathname.replace(/\/+$/, '') || '/';
+    closeAllModals(); wListeners = [];
     await loadMe();
     const authed = ['/checkout', '/orders', '/account'].includes(path) || path.startsWith('/order/');
     if (!authed || path === '/checkout') await refreshCatalog();

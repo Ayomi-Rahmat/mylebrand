@@ -7,7 +7,7 @@
   const TABS = [['products', 'Products'], ['orders', 'Orders'], ['ledger', 'Ledger'], ['customers', 'Customers'], ['carts', 'Carts'], ['wholesale', 'Wholesale'], ['settings', 'Settings']];
 
   const S = {
-    tab: 'products', batches: [], batchId: null, edits: [], products: [], form: null, editForm: null, showBatch: false,
+    tab: 'products', batches: [], batchId: null, edits: [], products: [], form: null, editForm: null, showBatch: false, newBatch: false, whItem: null,
     wh: null, whLine: 'beauty', orders: null, orderFilter: 'pending', openOrder: null, customers: null, carts: null, ledger: null, settings: null, tempPw: null,
   };
   let H = null; // helpers from admin.js: h, api, toast, run, copy, fmt, rerender
@@ -105,9 +105,25 @@
     const { h } = H;
     return h('div', { class: 'field' }, h('label', { text: label }), input, hint ? h('div', { class: 'hint', style: 'text-align:left', text: hint }) : null);
   }
+  // A pop-up window over the page. Closing it (X, Cancel or Esc) throws away anything not saved.
+  function overlay(card, onClose) {
+    const { h } = H;
+    const box = h('div', { class: 'amdl-box', role: 'dialog', 'aria-modal': 'true' },
+      h('button', { class: 'amdl-x', type: 'button', 'aria-label': 'Close', onclick: onClose }, '×'), card);
+    S.closeTop = onClose;
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) { const i = box.querySelector('input[type=text],textarea'); if (i) i.focus(); }
+    }, 30);
+    return h('div', { class: 'amdl' }, box);
+  }
+  const hasOverlay = () => !!(S.form || S.editForm || S.newBatch || S.whItem);
+  const closeAll = () => { S.form = null; S.editForm = null; S.newBatch = false; S.whItem = null; };
+  let escBound = false;
+
   function batchPicker() {
     const { h } = H;
-    const sel = h('select', { onchange: () => { S.batchId = Number(sel.value); S.form = null; S.editForm = null; go(); } },
+    const sel = h('select', { onchange: () => { S.batchId = Number(sel.value); closeAll(); go(); } },
       S.batches.map((b) => h('option', { value: b.id, selected: b.id === S.batchId ? 'selected' : null }, b.name + ' (' + b.status + ')')));
     return h('div', { class: 'field' }, h('label', { text: 'BATCH' }), sel);
   }
@@ -128,14 +144,21 @@
       }) }, 'Save'));
   }
 
-  function newBatchBox() {
+  function newBatchButton() {
+    const { h } = H;
+    return h('div', { class: 'row' }, h('button', { class: 'btn ghost small', onclick: () => { S.newBatch = true; H.rerender(); } }, S.batches.length ? '+ New batch' : '+ Create your first batch'));
+  }
+  function newBatchForm() {
     const { h, api, toast } = H;
     const name = h('input', { type: 'text', placeholder: 'Batch 03', maxlength: 80 });
-    return h('details', { class: 'card slim' }, h('summary', { text: S.batches.length ? '+ New batch' : '+ Create your first batch' }),
-      h('div', { class: 'field', style: 'margin-top:10px' }, h('label', { text: 'BATCH NAME' }), name),
-      h('button', { class: 'btn small', onclick: () => go(async () => {
-        const r = await api('POST', '/api/admin/batches', { name: name.value, status: 'open' }); S.batchId = r.id; toast('Batch created and open');
-      }) }, 'Create batch'));
+    const create = () => go(async () => {
+      const r = await api('POST', '/api/admin/batches', { name: name.value, status: 'open' }); S.batchId = r.id; S.newBatch = false; toast('Batch created and open');
+    });
+    name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+    return h('div', null, h('h3', { text: 'New batch' }),
+      field('BATCH NAME', name),
+      h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: create }, 'Create batch'),
+        h('button', { class: 'btn ghost small', onclick: () => { S.newBatch = false; H.rerender(); } }, 'Cancel')));
   }
   function batchStatusNote() {
     const { h, api, toast } = H;
@@ -230,10 +253,11 @@
 
   function productsTab() {
     const { h, api, toast } = H;
-    const wrap = h('div', null, batchPicker(), newBatchBox(), batchStatusNote(), batchShopCard());
+    const wrap = h('div', null, batchPicker(), newBatchButton(), batchStatusNote(), batchShopCard());
+    if (S.newBatch) wrap.append(overlay(newBatchForm(), () => { S.newBatch = false; H.rerender(); }));
     if (!S.batchId) return wrap;
-    if (S.editForm) { wrap.append(editForm()); return wrap; }
-    if (S.form) { wrap.append(productForm()); return wrap; }
+    if (S.editForm) wrap.append(overlay(editForm(), () => { S.editForm = null; H.rerender(); }));
+    if (S.form) wrap.append(overlay(productForm(), () => { S.form = null; H.rerender(); }));
     wrap.append(h('div', { class: 'row' },
       h('button', { class: 'btn small', onclick: () => { S.editForm = {}; H.rerender(); } }, '+ New edit')));
     if (!S.edits.length) wrap.append(h('p', { class: 'muted', text: 'No edits yet. An edit is a collection, like “The Becoming Edit”. Create one, then add products to it.' }));
@@ -383,44 +407,69 @@
     wrap.append(h('div', { class: 'card' },
       h('p', { class: 'small', style: 'margin-top:0' }, 'This is the page your QR code opens: ', h('a', { href: url, target: '_blank', rel: 'noopener', text: url })),
       h('p', { class: 'small muted', style: 'margin-bottom:0', text: 'Add each product with a photo, description and price. Put the higher price in “Old price” to show a discount. Leave a price empty and the page shows “Price on request”.' })));
+    // page-level fields write straight into S.wh, so nothing typed is lost when a pop-up opens or closes
+    const bind = (key, el) => { el.addEventListener('input', () => { L[key] = el.value; }); return el; };
     const f = {
-      title: h('input', { type: 'text', value: L.title, maxlength: 80 }), headline: h('input', { type: 'text', value: L.headline, maxlength: 120 }),
-      sub: h('textarea', { rows: 2, maxlength: 240 }, L.sub || ''), group: h('input', { type: 'text', value: L.groupLink || '', placeholder: 'https://chat.whatsapp.com/…' }),
-      min: h('input', { type: 'text', value: L.minNote || '', maxlength: 160, placeholder: 'e.g. Minimum order: 6 pieces in total' }),
-      bonus: h('input', { type: 'text', value: L.bonus || '', maxlength: 240, placeholder: 'e.g. Free lip balm for first-time buyers' }),
-      spots: h('input', { type: 'text', inputmode: 'numeric', value: L.spots == null ? '' : L.spots, placeholder: 'optional' }), deadline: h('input', { type: 'date', value: L.deadline || '' }),
+      title: bind('title', h('input', { type: 'text', value: L.title, maxlength: 80 })), headline: bind('headline', h('input', { type: 'text', value: L.headline, maxlength: 120 })),
+      sub: bind('sub', h('textarea', { rows: 2, maxlength: 240 }, L.sub || '')), group: bind('groupLink', h('input', { type: 'text', value: L.groupLink || '', placeholder: 'https://chat.whatsapp.com/…' })),
+      min: bind('minNote', h('input', { type: 'text', value: L.minNote || '', maxlength: 160, placeholder: 'e.g. Minimum order: 6 pieces in total' })),
+      bonus: bind('bonus', h('input', { type: 'text', value: L.bonus || '', maxlength: 240, placeholder: 'e.g. Free lip balm for first-time buyers' })),
+      spots: bind('spots', h('input', { type: 'text', inputmode: 'numeric', value: L.spots == null ? '' : L.spots, placeholder: 'optional' })), deadline: bind('deadline', h('input', { type: 'date', value: L.deadline || '' })),
     };
     wrap.append(h('div', { class: 'card' },
       field('PAGE NAME', f.title), field('HEADLINE', f.headline), field('ONE-LINE DESCRIPTION', f.sub),
       field('WHATSAPP GROUP LINK (leave empty to use your community link)', f.group), field('MINIMUM ORDER NOTE (optional)', f.min),
       field('FIRST-ORDER BONUS (optional, only offer what you will honour)', f.bonus), field('LIMITED TO FIRST HOW MANY STUDENTS? (optional)', f.spots), field('OFFER ENDS ON (optional)', f.deadline)));
-    const rows = h('div');
     const items = L.items;
     const beauty = S.whLine === 'beauty';
-    const drawRows = () => {
-      rows.replaceChildren(...items.map((it, i) => {
-        if (!Array.isArray(it.images)) it.images = [];
-        const inp = (key, label, ph) => { const el = h('input', { type: 'text', inputmode: ['name', 'note'].includes(key) ? 'text' : 'numeric', value: it[key] == null ? '' : it[key], placeholder: ph || '' });
-          el.addEventListener('input', () => { it[key] = el.value; }); return h('div', { class: 'mini' }, h('span', { text: label }), el); };
-        const desc = h('textarea', { rows: 2, maxlength: 600, placeholder: 'What is it? Size, benefits, what is included…' }, it.desc || '');
-        desc.addEventListener('input', () => { it.desc = desc.value; });
-        return h('div', { class: 'card slim' },
-          h('div', { class: 'row between' }, h('b', { text: it.name || 'New product' }), h('button', { class: 'btn danger small', onclick: () => { items.splice(i, 1); drawRows(); } }, 'Remove')),
-          h('div', { class: 'row' }, inp('name', 'PRODUCT NAME', 'e.g. Hydrating face mask')),
-          h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'DESCRIPTION' }), desc),
-          h('div', { class: 'row' }, inp('price', beauty ? 'YOU PAY ₦ (EACH)' : 'PRICE ₦'), inp('oldPrice', 'OLD PRICE ₦ (for a discount)'), beauty ? inp('resale', 'THEY SELL AT ₦') : null, inp('minQty', 'MIN QUANTITY')),
-          h('div', { class: 'row' }, inp('note', 'SHORT NOTE (size, shade…)')),
-          h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'PHOTOS (up to 3)' }), photoPicker(it.images, 3, (l) => { it.images = l; })));
-      }));
+    const blank = () => ({ name: '', price: '', oldPrice: '', resale: '', minQty: '', note: '', desc: '', images: [] });
+    const openItem = (i) => { S.whItem = { i, draft: i >= 0 ? JSON.parse(JSON.stringify(items[i])) : blank() }; if (!Array.isArray(S.whItem.draft.images)) S.whItem.draft.images = []; H.rerender(); };
+    const priceLine = (it) => {
+      if (!it.price) return 'No price yet · shows “Price on request”';
+      const bits = [(beauty ? 'You pay ' : '') + naira(it.price)];
+      if (it.oldPrice) bits.push('was ' + naira(it.oldPrice));
+      if (beauty && it.resale) bits.push('they sell at ' + naira(it.resale));
+      if (it.minQty) bits.push('min ' + it.minQty);
+      return bits.join(' · ');
     };
-    drawRows();
-    wrap.append(h('h3', { style: 'margin:6px 0 10px', text: 'Products and prices' }), rows,
-      h('div', { class: 'row' }, h('button', { class: 'btn ghost small', onclick: () => { items.push({ name: '', price: '', oldPrice: '', resale: '', minQty: '', note: '', desc: '', images: [] }); drawRows(); } }, '+ Add product')),
-      h('div', { class: 'row', style: 'margin-top:14px' }, h('button', { class: 'btn', onclick: () => go(async () => {
-        const body = { title: f.title.value, headline: f.headline.value, sub: f.sub.value, groupLink: f.group.value, minNote: f.min.value,
-          bonus: f.bonus.value, spots: f.spots.value, deadline: f.deadline.value, items };
-        await api('PUT', '/api/admin/wholesale/' + S.whLine, body); toast('Saved. Your page is updated.');
-      }) }, 'Save page')));
+    wrap.append(h('div', { class: 'row between', style: 'margin:6px 0 10px' }, h('h3', { style: 'margin:0', text: 'Products and prices' }),
+      h('button', { class: 'btn small', onclick: () => openItem(-1) }, '+ Add product')));
+    wrap.append(h('div', { class: 'card slim' }, items.length ? items.map((it, i) => h('div', { class: 'prow' },
+      it.images && it.images[0] ? h('img', { src: cdn(it.images[0].url, 96), alt: '' }) : h('div', { class: 'noimg', text: '—' }),
+      h('div', { class: 'pinfo' }, h('div', { class: 'pname', text: it.name || 'Unnamed product' }), h('div', { class: 'muted small', text: priceLine(it) })),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn ghost small', onclick: () => openItem(i) }, 'Edit'),
+        h('button', { class: 'btn danger small', onclick: () => { if (confirm('Remove “' + (it.name || 'this product') + '” from the page?')) { items.splice(i, 1); H.rerender(); } } }, '✕'))))
+      : h('p', { class: 'muted', style: 'margin:0', text: 'No products yet. Tap “+ Add product”.' })));
+    wrap.append(h('p', { class: 'small muted', text: 'Changes to products only go live when you press “Save page”.' }));
+    wrap.append(h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'btn', onclick: () => go(async () => {
+      const body = { title: L.title, headline: L.headline, sub: L.sub, groupLink: L.groupLink, minNote: L.minNote,
+        bonus: L.bonus, spots: L.spots, deadline: L.deadline, items };
+      await api('PUT', '/api/admin/wholesale/' + S.whLine, body); toast('Saved. Your page is updated.');
+    }) }, 'Save page')));
+    if (S.whItem) {
+      const w = S.whItem, d = w.draft;
+      const inp = (key, label, ph, wide) => { const el = h('input', { type: 'text', inputmode: ['name', 'note'].includes(key) ? 'text' : 'numeric', value: d[key] == null ? '' : d[key], placeholder: ph || '' });
+        el.addEventListener('input', () => { d[key] = el.value; }); return h('div', { class: 'mini', style: wide ? 'flex-basis:100%' : null }, h('span', { text: label }), el); };
+      const desc = h('textarea', { rows: 3, maxlength: 600, placeholder: 'What is it? Size, benefits, what is included…' }, d.description || d.desc || '');
+      desc.addEventListener('input', () => { d.desc = desc.value; });
+      const err = h('p', { class: 'err', role: 'alert' });
+      wrap.append(overlay(h('div', null, h('h3', { text: w.i >= 0 ? 'Edit product' : 'New product' }),
+        h('div', { class: 'row' }, inp('name', 'PRODUCT NAME', 'e.g. Hydrating face mask', true)),
+        h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'DESCRIPTION' }), desc),
+        h('div', { class: 'row' }, inp('price', beauty ? 'YOU PAY ₦ (EACH)' : 'PRICE ₦'), inp('oldPrice', 'OLD PRICE ₦ (for a discount)'), beauty ? inp('resale', 'THEY SELL AT ₦') : null, inp('minQty', 'MIN QUANTITY')),
+        h('div', { class: 'row' }, inp('note', 'SHORT NOTE (size, shade…)', '', true)),
+        h('div', { class: 'mini', style: 'flex-basis:100%' }, h('span', { text: 'PHOTOS (up to 3)' }), photoPicker(d.images, 3, (l) => { d.images = l; })),
+        err,
+        h('div', { class: 'row', style: 'margin-top:12px' },
+          h('button', { class: 'btn small', onclick: () => {
+            if (!String(d.name || '').trim()) { err.textContent = 'Give the product a name first.'; return; }
+            if (w.i >= 0) items[w.i] = d; else items.push(d);
+            S.whItem = null; H.rerender();
+          } }, 'Done'),
+          h('button', { class: 'btn ghost small', onclick: () => { S.whItem = null; H.rerender(); } }, 'Cancel'))),
+        () => { S.whItem = null; H.rerender(); }));
+    }
     return wrap;
   }
 
@@ -473,8 +522,11 @@
   function mount(helpers) {
     H = helpers;
     const { h } = H;
-    const nav = h('div', { class: 'row chips tabs' }, TABS.map(([k, t]) => h('button', { class: 'chip' + (S.tab === k ? ' on' : ''), onclick: () => { S.tab = k; S.form = null; S.editForm = null; go(); } }, t)));
+    const nav = h('div', { class: 'row chips tabs' }, TABS.map(([k, t]) => h('button', { class: 'chip' + (S.tab === k ? ' on' : ''), onclick: () => { S.tab = k; closeAll(); go(); } }, t)));
+    if (!escBound) { escBound = true; document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && hasOverlay() && S.closeTop) S.closeTop(); }); }
+    S.closeTop = null;
     const body = { products: productsTab, orders: ordersTab, ledger: ledgerTab, wholesale: wholesaleTab, customers: customersTab, carts: cartsTab, settings: settingsTab }[S.tab]();
+    document.body.style.overflow = hasOverlay() ? 'hidden' : '';
     return h('div', { class: 'shopadmin' }, nav, body);
   }
   async function load(helpers) { H = helpers; await loadTab(); }

@@ -50,3 +50,16 @@ input[type=text], .shopadmin select, .shopadmin textarea, .shopadmin input[type=
 .codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 12px 0; }
 .codes code { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px; text-align: center; font-size: 14px; letter-spacing: .06em; }
 .mini textarea { width: 100%; }
+
+/* ---------- pop-up forms ---------- */
+.amdl { position: fixed; inset: 0; z-index: 90; background: rgba(26,26,26,.55); display: flex; align-items: flex-end; justify-content: center; animation: amdlfade .18s ease; }
+.amdl-box { position: relative; background: #fff; color: inherit; width: 100%; max-height: 94vh; overflow-y: auto; border-radius: 20px 20px 0 0; padding: 22px 16px 28px; }
+.amdl-box > .card, .amdl-box > div > .card { border: 0; box-shadow: none; padding: 0; background: none; margin: 0; }
+.amdl-x { position: absolute; top: 10px; right: 12px; width: 36px; height: 36px; border-radius: 50%; border: 0; background: rgba(0,0,0,.07); font-size: 1.4rem; line-height: 1; cursor: pointer; z-index: 2; }
+.amdl-x:hover { background: rgba(0,0,0,.14); }
+.amdl-box h3 { margin-top: 0; padding-right: 40px; }
+@media (min-width: 720px) {
+  .amdl { align-items: center; padding: 24px; }
+  .amdl-box { max-width: 640px; border-radius: 20px; padding: 28px; }
+}
+@keyframes amdlfade { from { opacity: 0; } }

@@ -411,6 +411,7 @@ const deps = {
 deps.customer = require('./routes-customer')(app, deps);
 const shop = require('./routes-shop')(app, deps);
 deps.shop = shop;
+app.use('/fonts', express.static(path.join(__dirname, 'public', 'fonts'), { maxAge: '30d', immutable: true }));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 // Counted in memory per device. The real protection is the per-order lockout below, which lives in the database.

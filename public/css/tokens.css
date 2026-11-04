@@ -1,10 +1,10 @@
 /* MYLEBRAND design tokens. Change colours and fonts HERE and the whole shop follows.
-   To use your own fonts: put the files in /public/fonts and un-comment the @font-face blocks,
-   then swap the font names in the three --font-* lines below. */
-
-/* @font-face { font-family: 'Grande';        src: url('/fonts/Grande.woff2') format('woff2');        font-display: swap; }
-   @font-face { font-family: 'Angle';         src: url('/fonts/Angle.woff2') format('woff2');         font-display: swap; }
-   @font-face { font-family: 'August Script'; src: url('/fonts/AugustScript.woff2') format('woff2');  font-display: swap; font-weight: 700; } */
+   The brand font files live in /public/fonts (converted to woff2 so they load fast). */
+@font-face { font-family: 'Grande';         src: url('/fonts/Grande.woff2') format('woff2');         font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Angle';          src: url('/fonts/Angle.woff2') format('woff2');          font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Alice';          src: url('/fonts/Alice.woff2') format('woff2');          font-weight: 400; font-display: swap; }
+@font-face { font-family: 'August Script';  src: url('/fonts/AugustScript.woff2') format('woff2');   font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Romantic Couple'; src: url('/fonts/RomanticCouple.woff2') format('woff2'); font-weight: 400; font-display: swap; }
 
 :root {
   --terracotta: #964B36;
@@ -19,7 +19,9 @@
   --ok: #2f6b4f;
   --bad: #a3392f;
 
-  --font-display: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;   /* swap for Grande */
-  --font-body: 'Jost', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; /* swap for Angle */
-  --font-script: 'Pinyon Script', 'Cormorant Garamond', cursive;             /* swap for August Script */
+  --font-display: 'Grande', Georgia, 'Times New Roman', serif;            /* logo and the big hero headlines */
+  --font-heading: 'Angle', Georgia, 'Times New Roman', serif;             /* section headings */
+  --font-sub: 'Alice', Georgia, 'Times New Roman', serif;                 /* small titles (cards, boxes) */
+  --font-body: 'Open Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;  /* text, buttons, prices */
+  --font-script: 'August Script', 'Romantic Couple', cursive;             /* taglines */
 }
