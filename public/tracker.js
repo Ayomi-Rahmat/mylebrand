@@ -64,7 +64,7 @@
     if (i === 4) return 0.12 + 0.55 * seaFraction(d);
     if (i === 5) return 0.7;
     if (i === 6) return 0.73;
-    if (i === 11) return 1;
+    if (i >= 11) return 1;
     return 0.78 + (i - 7) * 0.055;
   }
 
@@ -144,6 +144,8 @@
       mt = h('p', { class: 'maptext' }, h('strong', { text: 'Landed in Nigeria' }), ' · the final stretch');
     } else if (d.currentIndex === 11) {
       mt = h('p', { class: 'maptext' }, h('strong', { text: 'Delivered' }), ' · enjoy');
+    } else if (d.currentIndex >= 12) {
+      mt = h('p', { class: 'maptext' }, h('strong', { text: 'Received' }), ' · thank you 🤍');
     }
     if (mt) mapCard.append(mt);
 

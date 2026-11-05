@@ -209,3 +209,10 @@ With no `ADMIN_PASSWORD` set, the terminal prints a temporary one.
 - The cart slides in from the side. Wholesale items (beauty and interiors) need no account: **Send my order on WhatsApp** writes the order message for you and blocks sending until each minimum quantity is met.
 - Preorder items still check out with a login. Log in and sign up now open as a pop-up too.
 - In the admin Shop tab, new batch, new edit, product and wholesale product forms open as pop-ups. Closing one with X, Cancel or Esc discards what was not saved. Wholesale products only go live after **Save page**.
+
+## Orders, ledger and the Received step
+
+- **Orders tab:** switch between Preorder batches, Beauty wholesale and Interiors. Website orders arrive by themselves. "+ New order" adds one by hand; "Edit order" changes anything (items, prices, totals, status, date). Beauty and interiors orders are logged when a student taps "Send my order on WhatsApp".
+- **Ledger tab:** pick a batch, Beauty wholesale or Interiors. "+ Add entry" records money in, cost of stock, or any expense.
+- **Tracker:** a final step 13, "Received", follows "Delivered". Customers can tap "I have received my order" in their account, or you can record it.
+- **Logins:** customers log in again after 24 hours. Logging out (or an expired login) clears the saved cart from the device.

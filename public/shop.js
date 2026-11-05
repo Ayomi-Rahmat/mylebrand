@@ -101,8 +101,14 @@
   let wcart = [];           // wholesale: [{k, line, name, qty}]
   try { wcart = JSON.parse(localStorage.getItem('mb_wcart') || '[]'); } catch (e) { wcart = []; }
   if (!Array.isArray(wcart)) wcart = [];
+  // a cart that belongs to a logged-in customer must not stay on the device after they log out or their login expires
+  function clearCarts() {
+    cart = []; wcart = []; wContact = { name: '', phone: '' };
+    try { ['mb_cart', 'mb_wcart', 'mb_wc', 'mb_cart_user'].forEach((k) => localStorage.removeItem(k)); } catch (e) { /* ignore */ }
+    paintCartCount();
+  }
   function saveCart() {
-    try { localStorage.setItem('mb_cart', JSON.stringify(cart)); } catch (e) { /* private mode */ }
+    try { localStorage.setItem('mb_cart', JSON.stringify(cart)); if (me) localStorage.setItem('mb_cart_user', '1'); } catch (e) { /* private mode */ }
     if (me) { clearTimeout(syncTimer); syncTimer = setTimeout(() => api('PUT', '/api/cart', { items: cart }).catch(() => {}), 700); }
     paintCartCount();
   }
@@ -160,9 +166,9 @@
   async function loadMe() {
     if (meLoaded) return me;
     meLoaded = true;
-    if (!hasHint()) return null;
-    try { me = (await api('GET', '/api/account/me')).customer; } catch (e) { me = null; }
+    if (hasHint()) { try { me = (await api('GET', '/api/account/me')).customer; } catch (e) { me = null; } }
     if (me) mergeServerCart();
+    else { let owned = false; try { owned = !!localStorage.getItem('mb_cart_user'); } catch (e) { /* ignore */ } if (owned) clearCarts(); } // login expired
     return me;
   }
   function afterAuth(c, next) {
@@ -380,11 +386,13 @@
     const map = products();
     return cart.map((i) => ({ ...i, info: map.get(i.id) }));
   }
-  function wMessage(items) {
+  function wMessage(items, contact) {
     const groups = {};
     items.forEach((x) => { (groups[x.w.line] = groups[x.w.line] || []).push(x); });
     const keys = Object.keys(groups);
     const lines = ['Hi MYLEBRAND! 🤍 I would like to order:'];
+    if (contact && contact.name) lines.push('Name: ' + contact.name);
+    if (contact && contact.phone) lines.push('Phone: ' + contact.phone);
     let total = 0;
     keys.forEach((k) => {
       const g = groups[k]; const sub = g.reduce((t, x) => t + x.it.price * x.w.qty, 0); total += sub;
@@ -397,6 +405,16 @@
   }
   function thumb(url, w) { return url ? h('img', { class: 'cthumb', src: img(url, w || 160), alt: '' }) : h('div', { class: 'cthumb noimg', text: '✦' }); }
 
+  let wContact = { name: '', phone: '' };
+  try { wContact = { name: '', phone: '', ...JSON.parse(localStorage.getItem('mb_wc') || '{}') }; } catch (e) { /* ignore */ }
+  // keeps a copy of the order for the admin (the WhatsApp message itself is what the customer sends)
+  function recordW(cur) {
+    const lines = [...new Set(cur.map((x) => x.w.line))];
+    lines.forEach((line) => {
+      const its = cur.filter((x) => x.w.line === line).map((x) => ({ name: x.it.name, qty: x.w.qty }));
+      api('POST', '/api/wholesale/orders', { line, items: its, name: wContact.name, phone: wContact.phone }).catch(() => {});
+    });
+  }
   function wSection(repaint) {
     const items = wItems();
     const sec = h('div', { class: 'csec' });
@@ -411,9 +429,14 @@
         h('div', { class: 'totalrow', style: 'border-top:0' }, h('span', { text: 'Wholesale total' }), h('span', { text: naira(total) })),
         profit !== null ? h('div', { class: 'totalrow gain', style: 'border-top:0;font-size:1.05rem' }, h('span', { text: 'If you sell all your beauty items' }), h('span', { text: '+' + naira(profit) + ' profit' })) : null,
         short.length ? h('div', { class: 'notice', text: 'Minimum not reached: ' + short.join(', ') }) : null,
-        h('a', { class: 'btn wa block' + (short.length ? ' disabled' : ''), 'aria-disabled': short.length ? 'true' : null, href: short.length ? null : wa(wMessage(cur)), target: short.length ? null : '_blank', rel: 'noopener' }, 'Send my order on WhatsApp')].filter(Boolean));
+        h('a', { class: 'btn wa block' + (short.length ? ' disabled' : ''), 'aria-disabled': short.length ? 'true' : null, href: short.length ? null : wa(wMessage(cur, wContact)), target: short.length ? null : '_blank', rel: 'noopener', onclick: () => { if (!short.length) recordW(cur); } }, 'Send my order on WhatsApp'),
+        h('p', { class: 'center', style: 'margin:8px 0 0' }, h('button', { class: 'linkbtn', type: 'button', onclick: () => { if (confirm('Remove all wholesale items from your cart?')) { wcart = []; saveW(); repaint(); } } }, 'Clear wholesale items'))].filter(Boolean));
     };
-    sec.append(h('h3', { text: 'Wholesale order' }), h('p', { class: 'small muted', style: 'margin:0 0 6px', text: 'No account needed. Your order is written for you on WhatsApp.' }));
+    const keep = () => { try { localStorage.setItem('mb_wc', JSON.stringify(wContact)); } catch (e) { /* ignore */ } drawFoot(); };
+    const nameIn = h('input', { type: 'text', class: 'cin', placeholder: 'Your name (optional)', maxlength: 80, autocomplete: 'name', value: wContact.name, oninput: () => { wContact.name = nameIn.value; keep(); } });
+    const phoneIn = h('input', { type: 'tel', class: 'cin', placeholder: 'WhatsApp number (optional)', maxlength: 20, autocomplete: 'tel', value: wContact.phone, oninput: () => { wContact.phone = phoneIn.value; keep(); } });
+    sec.append(h('h3', { text: 'Wholesale order' }), h('p', { class: 'small muted', style: 'margin:0 0 6px', text: 'No account needed. Your order is written for you on WhatsApp.' }),
+      h('div', { class: 'cinrow' }, nameIn, phoneIn));
     items.forEach(({ w, L, it }) => {
       const lt = h('div', { class: 'cright-t', text: naira(it.price * w.qty) });
       const q = numInput(w.qty, { min: 1, max: 999, onChange: (n) => { w.qty = n; saveW(); lt.textContent = naira(it.price * n); drawFoot(); } });
@@ -625,6 +648,14 @@
             s.note && s.status !== 'upcoming' ? h('div', { class: 'small', style: 'font-style:italic', text: s.note }) : null)))));
       }
     }
+    if (d.stages) {
+      const dv = d.stages.find((x) => x.key === 'delivered'), rc = d.stages.find((x) => x.key === 'received');
+      if (dv && dv.at && rc && !rc.at) {
+        parts.push(h('div', { class: 'card center' }, h('h3', { style: 'margin-bottom:6px', text: 'Has your order arrived?' }),
+          h('p', { class: 'muted small', style: 'margin-top:0', text: 'Tap the button once you have it in your hands. It completes your tracker.' }),
+          h('button', { class: 'btn', onclick: async (e) => { e.target.disabled = true; try { await api('POST', '/api/account/orders/' + encodeURIComponent(o.orderId) + '/received', {}); toast('Thank you! 🤍'); route(); } catch (x) { toast(x.message, true); e.target.disabled = false; } } }, 'I have received my order')));
+      }
+    }
     if (o.status === 'cancelled') parts.push(h('div', { class: 'notice bad', text: 'This order was cancelled.' }));
     parts.push(h('div', { class: 'card' }, h('h3', { style: 'margin-bottom:8px', text: 'Order summary' }),
       d.items.map((i) => h('div', { class: 'line', style: 'padding:8px 0' }, h('div', { class: 'grow', text: i.qty + ' × ' + i.name }), h('div', { text: naira(i.unitPrice * i.qty) }))),
@@ -668,7 +699,7 @@
       h('div', { class: 'card' }, h('h3', { style: 'margin-bottom:12px', text: 'Change password' }), fld('cp', me.mustChange ? 'Temporary password' : 'Current password', cur), fld('np', 'New password (8+ characters)', nw),
         h('button', { class: 'btn small', onclick: async () => { e2.textContent = ''; try { await api('POST', '/api/account/password', { current: cur.value, next: nw.value }); me.mustChange = false; cur.value = nw.value = ''; toast('Password changed'); route(); } catch (x) { e2.textContent = x.message; } } }, 'Change password'), e2),
       h('p', null, h('a', { class: 'btn ghost', href: '/orders', 'data-link': '' }, 'My orders'), ' ',
-        h('button', { class: 'btn ghost', onclick: async () => { try { await api('POST', '/api/account/logout', {}); } catch (e) { /* ignore */ } me = null; cart = cart; paintHeader(); go('/'); } }, 'Log out'))));
+        h('button', { class: 'btn ghost', onclick: async () => { try { await api('POST', '/api/account/logout', {}); } catch (e) { /* ignore */ } me = null; clearCarts(); closeAllModals(); paintHeader(); go('/'); } }, 'Log out'))));
   }
 
 

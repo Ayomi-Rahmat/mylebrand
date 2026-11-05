@@ -12,7 +12,7 @@ module.exports = function mountAdminShop(app, d) {
       if (nullable) return null;
       throw httpError(400, `${what} is required.`);
     }
-    const n = Number(v);
+    const n = Number(typeof v === 'string' ? v.replace(/[₦,\s]/g, '') : v);
     if (!Number.isInteger(n) || n < min || n > max) throw httpError(400, `${what} must be a whole number from ${min} to ${max}.`);
     return n;
   };
@@ -237,23 +237,51 @@ module.exports = function mountAdminShop(app, d) {
     res.json({ ok: true });
   });
 
-  // ---------- shop orders ----------
+  // ---------- orders ----------
+  // Every order lands here: website checkouts arrive on their own, and you can add or change any order by hand.
+  const STATUSES = ['pending', 'paid', 'cancelled'];
+  const isoDay = (v) => { const d = dateOrNull(v); return d ? d + 'T12:00:00.000Z' : null; };
+  const A32 = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const rid = (prefix) => prefix + '-' + Array.from({ length: 6 }, () => A32[crypto.randomInt(A32.length)]).join('');
+  const sumLines = (items) => items.reduce((t, i) => t + i.unitPrice * i.qty, 0);
+  const summaryOf = (items) => items.map((l) => `${l.qty} x ${l.name}`).join(', ').slice(0, 300);
+
+  function readItems(raw) {
+    const out = [];
+    for (const it of (Array.isArray(raw) ? raw : []).slice(0, 60)) {
+      const name = clean(it && it.name, 120);
+      if (!name) continue;
+      out.push({
+        name,
+        qty: intIn(it.qty, 1, 9999, `Quantity for "${name}"`),
+        unitPrice: intIn(it.unitPrice, 0, 5000000, `Price for "${name}"`),
+        unitCost: intIn(it.unitCost, 0, 5000000, `Cost for "${name}"`, { nullable: true }),
+        productId: it.productId ? Number(it.productId) || null : null,
+      });
+    }
+    if (!out.length) throw httpError(400, 'Add at least one item (a name, how many, and the price).');
+    return out;
+  }
+  const readStatus = (v, fallback) => (v == null || v === '' ? fallback : (STATUSES.includes(v) ? v : (() => { throw httpError(400, 'Status must be pending, paid or cancelled.'); })()));
+  const totalOf = (b, items, fallback) => (b.total === '' || b.total == null ? (items ? sumLines(items) : fallback) : intIn(b.total, 0, 1000000000, 'Total'));
+
+  // batch orders ------------------------------------------------------------
   app.get('/api/admin/shop-orders', async (req, res) => {
-    const status = ['pending', 'paid', 'cancelled'].includes(req.query.status) ? req.query.status : null;
+    const status = STATUSES.includes(req.query.status) ? req.query.status : null;
     const batchId = req.query.batchId ? intId(req.query.batchId, 'Batch') : null;
     const [rows, counts] = await Promise.all([
-      q(`SELECT o.id, o.public_id, o.customer_name, o.phone, o.total, o.status, o.gift, o.created_at, o.items, o.batch_id, o.customer_id, b.name AS batch_name
+      q(`SELECT o.id, o.public_id, o.customer_name, o.phone, o.total, o.status, o.gift, o.created_at, o.items, o.batch_id, o.customer_id, o.source, b.name AS batch_name
            FROM orders o JOIN batches b ON b.id = o.batch_id
-          WHERE o.source = 'shop' AND ($1::text IS NULL OR o.status = $1) AND ($2::int IS NULL OR o.batch_id = $2)
+          WHERE ($1::text IS NULL OR o.status = $1) AND ($2::int IS NULL OR o.batch_id = $2)
           ORDER BY o.id DESC LIMIT 300`, [status, batchId]),
-      q(`SELECT status, COUNT(*) AS n FROM orders WHERE source = 'shop' AND ($1::int IS NULL OR batch_id = $1) GROUP BY status`, [batchId]),
+      q(`SELECT status, COUNT(*) AS n FROM orders WHERE ($1::int IS NULL OR batch_id = $1) GROUP BY status`, [batchId]),
     ]);
     const c = { pending: 0, paid: 0, cancelled: 0 };
-    counts.rows.forEach((r) => { c[r.status] = r.n; });
+    counts.rows.forEach((r) => { c[r.status] = Number(r.n); });
     res.json({
       counts: c,
       orders: rows.rows.map((o) => ({
-        id: o.id, publicId: o.public_id, name: o.customer_name, phone: o.phone, total: o.total, status: o.status, gift: o.gift,
+        id: o.id, publicId: o.public_id, name: o.customer_name, phone: o.phone, total: o.total, status: o.status, gift: o.gift, source: o.source,
         createdAt: o.created_at, summary: o.items, batchId: o.batch_id, batchName: o.batch_name, hasAccount: o.customer_id !== null,
       })),
     });
@@ -261,10 +289,11 @@ module.exports = function mountAdminShop(app, d) {
   app.get('/api/admin/shop-orders/:id', async (req, res) => {
     const id = intId(req.params.id, 'Order');
     const o = (await q(
-      `SELECT o.*, b.name AS batch_name FROM orders o JOIN batches b ON b.id = o.batch_id WHERE o.id = $1 AND o.source = 'shop'`, [id])).rows[0];
+      `SELECT o.*, b.name AS batch_name, cu.email AS cust_email FROM orders o JOIN batches b ON b.id = o.batch_id
+         LEFT JOIN customers cu ON cu.id = o.customer_id WHERE o.id = $1`, [id])).rows[0];
     if (!o) throw httpError(404, 'Order not found.');
     const [items, log, ev] = await Promise.all([
-      q('SELECT name, kind, qty, unit_price FROM order_items WHERE order_id = $1 ORDER BY id', [id]),
+      q('SELECT product_id, name, kind, qty, unit_price, unit_cost FROM order_items WHERE order_id = $1 ORDER BY id', [id]),
       q('SELECT at, what, note FROM order_log WHERE order_id = $1 ORDER BY id', [id]),
       q('SELECT stage, at, note FROM events WHERE batch_id = $1 AND (order_id IS NULL OR order_id = $2)', [o.batch_id, id]),
     ]);
@@ -272,27 +301,175 @@ module.exports = function mountAdminShop(app, d) {
     res.json({
       order: {
         id: o.id, publicId: o.public_id, name: o.customer_name, phone: o.phone, address: o.address, notes: o.notes, total: o.total,
-        status: o.status, gift: o.gift, createdAt: o.created_at, paidAt: o.paid_at, batchId: o.batch_id, batchName: o.batch_name,
+        status: o.status, gift: o.gift, source: o.source, createdAt: o.created_at, paidAt: o.paid_at, batchId: o.batch_id, batchName: o.batch_name,
+        email: o.cust_email || '', summary: o.items,
         stage: tl.currentIndex >= 0 ? STAGES[tl.currentIndex].title : null, locked: o.locked_until > Date.now(),
       },
-      items: items.rows.map((i) => ({ name: i.name, kind: i.kind, qty: i.qty, unitPrice: i.unit_price, line: i.unit_price * i.qty })),
+      items: items.rows.map((i) => ({ productId: i.product_id, name: i.name, kind: i.kind, qty: i.qty, unitPrice: i.unit_price, unitCost: i.unit_cost, line: i.unit_price * i.qty })),
       log: log.rows,
     });
+  });
+  async function linkProducts(c, items) {
+    const ids = [...new Set(items.map((i) => i.productId).filter(Boolean))];
+    if (!ids.length) return items;
+    const ps = new Map((await c.query('SELECT id, cost_price, kind FROM products WHERE id = ANY($1::int[])', [ids])).rows.map((p) => [p.id, p]));
+    return items.map((i) => {
+      const p = i.productId && ps.get(i.productId);
+      if (!p) return { ...i, productId: null, kind: 'product' };
+      return { ...i, kind: p.kind, unitCost: i.unitCost !== null ? i.unitCost : p.cost_price };
+    });
+  }
+  async function writeItems(c, orderId, items) {
+    await c.query('DELETE FROM order_items WHERE order_id = $1', [orderId]);
+    await c.query(
+      `INSERT INTO order_items (order_id, product_id, name, kind, unit_price, unit_cost, qty)
+       SELECT $1::int, t.pid, t.name, COALESCE(t.kind, 'product'), t.price, t.cost, t.qty
+         FROM unnest($2::int[], $3::text[], $4::text[], $5::int[], $6::int[], $7::int[]) AS t(pid, name, kind, price, cost, qty)`,
+      [orderId, items.map((i) => i.productId), items.map((i) => i.name), items.map((i) => i.kind || 'product'), items.map((i) => i.unitPrice), items.map((i) => i.unitCost), items.map((i) => i.qty)]);
+  }
+  async function custIdByEmail(c, email) {
+    const e = clean(email, 120).toLowerCase();
+    if (!e) return null;
+    const r = (await c.query('SELECT id FROM customers WHERE email = $1', [e])).rows[0];
+    if (!r) throw httpError(400, 'No customer account has that email. Leave the email empty, or check the spelling.');
+    return r.id;
+  }
+  app.post('/api/admin/shop-orders', async (req, res) => {
+    const b = req.body || {};
+    const batchId = intId(b.batchId, 'Batch');
+    if (!(await q('SELECT 1 FROM batches WHERE id = $1', [batchId])).rows.length) throw httpError(404, 'Batch not found.');
+    const name = clean(b.name, 80);
+    if (!name) throw httpError(400, 'Who is the order for? Add a name.');
+    const status = readStatus(b.status, 'paid');
+    const raw = readItems(b.items);
+    const out = await tx(async (c) => {
+      const items = await linkProducts(c, raw);
+      const total = totalOf(b, items);
+      const when = isoDay(b.date) || new Date().toISOString();
+      const custId = await custIdByEmail(c, b.email);
+      const locked = await hashPin(crypto.randomBytes(24).toString('hex'));
+      let order = null;
+      for (let i = 0; i < 6 && !order; i++) {
+        const r = await c.query(
+          `INSERT INTO orders (batch_id, public_id, pin_hash, customer_name, items, phone, address, notes, total, status, source, gift, customer_id, created_at, paid_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'admin',$11,$12,$13,$14) ON CONFLICT (public_id) DO NOTHING RETURNING id, public_id`,
+          [batchId, d.newPublicId(), locked, name, summaryOf(items), String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 16), clean(b.address, 300), clean(b.notes, 300),
+            total, status, b.gift === true, custId, when, status === 'paid' ? when : null]);
+        order = r.rows[0] || null;
+      }
+      if (!order) throw httpError(500, 'Could not create the order. Please try again.');
+      await writeItems(c, order.id, items);
+      await c.query(`INSERT INTO order_log (order_id, at, what, note) VALUES ($1,$2,'created','Added by admin')`, [order.id, new Date().toISOString()]);
+      return { id: order.id, publicId: order.public_id };
+    });
+    res.json(out);
+  });
+  app.patch('/api/admin/shop-orders/:id', async (req, res) => {
+    const id = intId(req.params.id, 'Order');
+    const b = req.body || {};
+    await tx(async (c) => {
+      const cur = (await c.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id])).rows[0];
+      if (!cur) throw httpError(404, 'Order not found.');
+      const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+      const name = has('name') ? clean(b.name, 80) : cur.customer_name;
+      if (!name) throw httpError(400, 'The order needs a name.');
+      const status = readStatus(b.status, cur.status);
+      let items = null;
+      if (has('items')) items = await linkProducts(c, readItems(b.items));
+      const total = has('total') && b.total !== '' && b.total !== null ? intIn(b.total, 0, 1000000000, 'Total') : (items ? sumLines(items) : cur.total);
+      const created = has('date') && b.date ? isoDay(b.date) : cur.created_at;
+      const now = new Date().toISOString();
+      const paidAt = status === 'paid' ? (cur.status === 'paid' ? cur.paid_at : now) : null;
+      const custId = has('email') ? await custIdByEmail(c, b.email) : cur.customer_id;
+      await c.query(
+        `UPDATE orders SET customer_name=$1, phone=$2, address=$3, notes=$4, total=$5, status=$6, paid_at=$7, gift=$8, customer_id=$9, created_at=$10, items=$11 WHERE id=$12`,
+        [name, has('phone') ? String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 16) : cur.phone, has('address') ? clean(b.address, 300) : cur.address,
+          has('notes') ? clean(b.notes, 300) : cur.notes, total, status, paidAt, has('gift') ? b.gift === true : cur.gift, custId, created, items ? summaryOf(items) : cur.items, id]);
+      if (items) await writeItems(c, id, items);
+      await c.query('INSERT INTO order_log (order_id, at, what, note) VALUES ($1,$2,$3,$4)',
+        [id, now, status !== cur.status ? status : 'edited', status !== cur.status ? 'Changed by admin' : 'Edited by admin']);
+    });
+    res.json({ ok: true });
   });
   app.post('/api/admin/shop-orders/:id/status', async (req, res) => {
     const id = intId(req.params.id, 'Order');
     const next = req.body && req.body.status;
-    if (!['pending', 'paid', 'cancelled'].includes(next)) throw httpError(400, 'Status must be pending, paid or cancelled.');
+    if (!STATUSES.includes(next)) throw httpError(400, 'Status must be pending, paid or cancelled.');
     const note = clean(req.body.note, 200);
     await tx(async (c) => {
-      const o = (await c.query(`SELECT * FROM orders WHERE id = $1 AND source = 'shop' FOR UPDATE`, [id])).rows[0];
+      const o = (await c.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [id])).rows[0];
       if (!o) throw httpError(404, 'Order not found.');
-      if (o.status === 'cancelled') throw httpError(409, 'A cancelled order cannot be changed. Ask the customer to place a new one.');
       if (o.status === next) throw httpError(409, `This order is already ${next}.`);
       const now = new Date().toISOString();
       await c.query('UPDATE orders SET status = $1, paid_at = $2 WHERE id = $3', [next, next === 'paid' ? now : null, id]);
       await c.query('INSERT INTO order_log (order_id, at, what, note) VALUES ($1,$2,$3,$4)', [id, now, next, note]);
     });
+    res.json({ ok: true });
+  });
+
+  // wholesale orders (beauty and interiors) ----------------------------------
+  const LINES = ['beauty', 'interiors'];
+  const lineOut = (o) => ({
+    id: o.id, publicId: o.public_id, line: o.line, name: o.customer_name, phone: o.phone, notes: o.notes, items: o.items, total: o.total,
+    status: o.status, source: o.source, createdAt: o.created_at, paidAt: o.paid_at,
+    summary: o.items.map((i) => `${i.qty} x ${i.name}`).join(', '),
+  });
+  app.get('/api/admin/line-orders', async (req, res) => {
+    const line = LINES.includes(req.query.line) ? req.query.line : null;
+    if (!line) throw httpError(400, 'Choose beauty or interiors.');
+    const status = STATUSES.includes(req.query.status) ? req.query.status : null;
+    const [rows, counts] = await Promise.all([
+      q('SELECT * FROM line_orders WHERE line = $1 AND ($2::text IS NULL OR status = $2) ORDER BY id DESC LIMIT 300', [line, status]),
+      q('SELECT status, COUNT(*) AS n FROM line_orders WHERE line = $1 GROUP BY status', [line]),
+    ]);
+    const c = { pending: 0, paid: 0, cancelled: 0 };
+    counts.rows.forEach((r) => { c[r.status] = Number(r.n); });
+    res.json({ counts: c, orders: rows.rows.map(lineOut) });
+  });
+  function readLineOrder(b) {
+    const items = readItems(b.items);
+    return {
+      name: clean(b.name, 80), phone: String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 16), notes: clean(b.notes, 300), items,
+    };
+  }
+  app.post('/api/admin/line-orders', async (req, res) => {
+    const b = req.body || {};
+    const line = LINES.includes(b.line) ? b.line : null;
+    if (!line) throw httpError(400, 'Choose beauty or interiors.');
+    const o = readLineOrder(b);
+    const status = readStatus(b.status, 'paid');
+    const total = totalOf(b, o.items);
+    const when = isoDay(b.date) || new Date().toISOString();
+    let pid = null;
+    for (let i = 0; i < 6 && !pid; i++) {
+      const r = await q(
+        `INSERT INTO line_orders (line, public_id, customer_name, phone, notes, items, total, status, source, created_at, paid_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'admin',$9,$10) ON CONFLICT (public_id) DO NOTHING RETURNING id`,
+        [line, rid(line === 'beauty' ? 'BW' : 'IN'), o.name, o.phone, o.notes, JSON.stringify(o.items), total, status, when, status === 'paid' ? when : null]);
+      pid = r.rows[0] ? r.rows[0].id : null;
+    }
+    if (!pid) throw httpError(500, 'Could not create the order. Please try again.');
+    res.json({ id: pid });
+  });
+  app.patch('/api/admin/line-orders/:id', async (req, res) => {
+    const id = intId(req.params.id, 'Order');
+    const b = req.body || {};
+    const cur = (await q('SELECT * FROM line_orders WHERE id = $1', [id])).rows[0];
+    if (!cur) throw httpError(404, 'Order not found.');
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+    const items = has('items') ? readItems(b.items) : cur.items;
+    const status = readStatus(b.status, cur.status);
+    const total = has('total') && b.total !== '' && b.total !== null ? intIn(b.total, 0, 1000000000, 'Total') : (has('items') ? sumLines(items) : cur.total);
+    const now = new Date().toISOString();
+    await q(
+      `UPDATE line_orders SET customer_name=$1, phone=$2, notes=$3, items=$4, total=$5, status=$6, paid_at=$7, created_at=$8 WHERE id=$9`,
+      [has('name') ? clean(b.name, 80) : cur.customer_name, has('phone') ? String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 16) : cur.phone,
+        has('notes') ? clean(b.notes, 300) : cur.notes, JSON.stringify(items), total, status, status === 'paid' ? (cur.status === 'paid' ? cur.paid_at : now) : null,
+        has('date') && b.date ? isoDay(b.date) : cur.created_at, id]);
+    res.json({ ok: true });
+  });
+  app.delete('/api/admin/line-orders/:id', async (req, res) => {
+    await q('DELETE FROM line_orders WHERE id = $1', [intId(req.params.id, 'Order')]);
     res.json({ ok: true });
   });
 
@@ -346,7 +523,7 @@ module.exports = function mountAdminShop(app, d) {
     });
   });
 
-  // ---------- expenses ----------
+  // ---------- expenses and other money entries ----------
   app.get('/api/admin/expenses', async (req, res) => {
     const batchId = intId(req.query.batchId, 'Batch');
     const r = await q('SELECT * FROM expenses WHERE batch_id = $1 ORDER BY id DESC', [batchId]);
@@ -366,25 +543,88 @@ module.exports = function mountAdminShop(app, d) {
     await q('DELETE FROM expenses WHERE id = $1', [intId(req.params.id, 'Expense')]);
     res.json({ ok: true });
   });
+  // One place to record money for any scope: a batch ("batch:3"), "beauty" or "interiors".
+  //   income  = money that came in that is not an order (a transfer, a refund to you, a sale you did not log)
+  //   cost    = what you paid for stock / the cost of what sold
+  //   expense = anything else (shipping, packaging, ads, data)
+  const KINDS = ['income', 'cost', 'expense'];
+  app.post('/api/admin/ledger-entries', async (req, res) => {
+    const b = req.body || {};
+    const scope = String(b.scope || '');
+    const kind = KINDS.includes(b.kind) ? b.kind : null;
+    if (!kind) throw httpError(400, 'Choose money in, cost, or expense.');
+    const label = clean(b.label, 80);
+    if (!label) throw httpError(400, 'Add a short label so you remember what this was.');
+    const amount = intIn(b.amount, 0, 100000000, 'Amount');
+    const date = dateOrNull(b.date);
+    const m = /^batch:(\d{1,9})$/.exec(scope);
+    if (m) {
+      const batchId = Number(m[1]);
+      if (!(await q('SELECT 1 FROM batches WHERE id = $1', [batchId])).rows.length) throw httpError(404, 'Batch not found.');
+      if (kind === 'expense') {
+        const r = await q('INSERT INTO expenses (batch_id, label, amount, spent_on, note) VALUES ($1,$2,$3,$4,$5) RETURNING id', [batchId, label, amount, date, clean(b.note, 200)]);
+        return res.json({ id: r.rows[0].id });
+      }
+    } else if (!LINES.includes(scope)) throw httpError(400, 'Unknown ledger.');
+    const r = await q('INSERT INTO ledger_entries (scope, kind, label, amount, entry_date, note, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+      [scope, kind, label, amount, date, clean(b.note, 200), new Date().toISOString()]);
+    res.json({ id: r.rows[0].id });
+  });
+  app.delete('/api/admin/ledger-entries/:id', async (req, res) => {
+    await q('DELETE FROM ledger_entries WHERE id = $1', [intId(req.params.id, 'Entry')]);
+    res.json({ ok: true });
+  });
 
-  // ---------- the batch ledger ----------
-  // Money in = paid orders. "Sold" counts paid orders only (pending ones are not money yet; they are shown separately).
+  // ---------- the ledger ----------
+  // Money in = paid orders + money-in entries. "Sold" counts paid orders only (pending ones are not money yet; they are shown separately).
   // A box counts toward the products inside it, so "bought vs sold vs left" works for single products.
+  const entryOut = (e, src) => ({ id: e.id, src, kind: e.kind, label: e.label, amount: e.amount, date: e.entry_date || e.spent_on || null, note: e.note || '' });
+  async function lineLedger(line) {
+    const [ords, ents] = await Promise.all([
+      q(`SELECT items, total, status FROM line_orders WHERE line = $1 AND status <> 'cancelled'`, [line]),
+      q('SELECT * FROM ledger_entries WHERE scope = $1 ORDER BY id DESC', [line]),
+    ]);
+    const by = new Map();
+    let revenue = 0, awaiting = 0, paid = 0, pending = 0, cogs = 0, cogsKnown = true;
+    for (const o of ords.rows) {
+      const isPaid = o.status === 'paid';
+      if (isPaid) { revenue += o.total; paid++; } else { awaiting += o.total; pending++; }
+      for (const it of o.items) {
+        const r = by.get(it.name) || by.set(it.name, { name: it.name, sold: 0, pending: 0, money: 0, cost: 0 }).get(it.name);
+        if (isPaid) { r.sold += it.qty; r.money += it.unitPrice * it.qty; if (it.unitCost == null) cogsKnown = false; else { cogs += it.unitCost * it.qty; r.cost += it.unitCost * it.qty; } }
+        else r.pending += it.qty;
+      }
+    }
+    const sum = (k) => ents.rows.filter((e) => e.kind === k).reduce((t, e) => t + e.amount, 0);
+    const otherIncome = sum('income'), extraCost = sum('cost'), expenses = sum('expense');
+    return {
+      scope: line, title: line === 'beauty' ? 'Beauty wholesale' : 'Interiors',
+      products: [...by.values()].sort((a, b) => b.money - a.money),
+      entries: ents.rows.map((e) => entryOut(e, 'entry')),
+      totals: { paidOrders: paid, pendingOrders: pending, revenue, awaiting, otherIncome, costOfSold: cogs, costOfSoldComplete: cogsKnown, extraCost, expenses,
+        profit: revenue + otherIncome - cogs - extraCost - expenses },
+    };
+  }
   app.get('/api/admin/ledger', async (req, res) => {
+    if (req.query.line) {
+      if (!LINES.includes(req.query.line)) throw httpError(404, 'Ledger not found.');
+      return res.json(await lineLedger(req.query.line));
+    }
     const batchId = intId(req.query.batchId, 'Batch');
     const batch = (await q('SELECT id, name, status FROM batches WHERE id = $1', [batchId])).rows[0];
     if (!batch) throw httpError(404, 'Batch not found.');
-    const [ps, boxes, items, exp, ords] = await Promise.all([
+    const [ps, boxes, items, exp, ords, ents] = await Promise.all([
       q(`SELECT p.id, p.name, p.kind, p.price, p.cost_price, p.qty_bought, p.sold_out, e.name AS edit_name
            FROM products p JOIN edits e ON e.id = p.edit_id WHERE e.batch_id = $1 ORDER BY e.sort, e.id, p.sort, p.id`, [batchId]),
       q(`SELECT bi.box_id, bi.product_id, bi.qty FROM box_items bi JOIN products b ON b.id = bi.box_id JOIN edits e ON e.id = b.edit_id WHERE e.batch_id = $1`, [batchId]),
       q(`SELECT oi.product_id, oi.kind, oi.qty, oi.unit_price, oi.unit_cost, o.status
            FROM order_items oi JOIN orders o ON o.id = oi.order_id WHERE o.batch_id = $1 AND o.status <> 'cancelled'`, [batchId]),
-      q('SELECT id, label, amount, spent_on FROM expenses WHERE batch_id = $1 ORDER BY id', [batchId]),
+      q('SELECT id, label, amount, spent_on, note FROM expenses WHERE batch_id = $1 ORDER BY id', [batchId]),
       q(`SELECT COUNT(*) FILTER (WHERE status = 'paid') AS paid, COUNT(*) FILTER (WHERE status = 'pending') AS pending,
                 COALESCE(SUM(total) FILTER (WHERE status = 'paid'), 0) AS revenue,
                 COALESCE(SUM(total) FILTER (WHERE status = 'pending'), 0) AS awaiting
            FROM orders WHERE batch_id = $1`, [batchId]),
+      q('SELECT * FROM ledger_entries WHERE scope = $1 ORDER BY id DESC', ['batch:' + batchId]),
     ]);
     const boxOf = new Map();
     boxes.rows.forEach((r) => { (boxOf.get(r.box_id) || boxOf.set(r.box_id, []).get(r.box_id)).push(r); });
@@ -410,15 +650,19 @@ module.exports = function mountAdminShop(app, d) {
     });
     const spendOnStock = ps.rows.reduce((t, p) => t + (p.kind === 'product' && p.cost_price !== null && p.qty_bought !== null ? p.cost_price * p.qty_bought : 0), 0);
     const expenses = exp.rows.reduce((t, e) => t + e.amount, 0);
+    const otherIncome = ents.rows.filter((e) => e.kind === 'income').reduce((t, e) => t + e.amount, 0);
+    const extraCost = ents.rows.filter((e) => e.kind === 'cost').reduce((t, e) => t + e.amount, 0);
     const o = ords.rows[0];
     res.json({
+      scope: 'batch:' + batchId,
       batch,
       products: rows,
       expenses: exp.rows.map((e) => ({ id: e.id, label: e.label, amount: e.amount, spentOn: e.spent_on })),
+      entries: [...exp.rows.map((e) => entryOut({ ...e, kind: 'expense' }, 'expense')), ...ents.rows.map((e) => entryOut(e, 'entry'))],
       totals: {
         paidOrders: o.paid, pendingOrders: o.pending, revenue: Number(o.revenue), awaiting: Number(o.awaiting),
-        costOfSold: cogs, costOfSoldComplete: cogsKnown, spendOnStock, expenses,
-        profit: Number(o.revenue) - cogs - expenses,
+        otherIncome, costOfSold: cogs, costOfSoldComplete: cogsKnown, extraCost, spendOnStock, expenses,
+        profit: Number(o.revenue) + otherIncome - cogs - extraCost - expenses,
       },
     });
   });

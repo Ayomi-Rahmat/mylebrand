@@ -63,3 +63,6 @@ input[type=text], .shopadmin select, .shopadmin textarea, .shopadmin input[type=
   .amdl-box { max-width: 640px; border-radius: 20px; padding: 28px; }
 }
 @keyframes amdlfade { from { opacity: 0; } }
+
+.shopadmin input[type=tel], .amdl-box input[type=tel], .amdl-box input[type=text], .amdl-box input[type=date], .amdl-box select, .amdl-box textarea { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: #fff; font: inherit; box-sizing: border-box; }
+.amdl-box .row input[type=text], .amdl-box .row input[type=tel] { flex: 1; min-width: 70px; }

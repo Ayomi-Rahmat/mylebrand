@@ -327,6 +327,49 @@ module.exports = function mountShop(app, d) {
     res.json({ ...out });
   });
 
+  // ---------- wholesale orders: recorded when someone taps "Send my order on WhatsApp" ----------
+  // The WhatsApp message itself is written in the browser. This only keeps a copy for the admin, with prices from the database.
+  const wholesaleLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, max: 40, standardHeaders: true, legacyHeaders: false,
+    message: { error: 'Too many orders from this connection. Please message us on WhatsApp.' },
+  });
+  app.post('/api/wholesale/orders', wholesaleLimiter, sameOrigin, async (req, res) => {
+    const b = req.body || {};
+    const line = String(b.line || '');
+    if (!LINE_KEYS.includes(line)) throw httpError(400, 'Unknown page.');
+    const L = readLine(await getSettings(), line);
+    const byName = new Map(L.items.map((i) => [i.name, i]));
+    const items = [];
+    for (const it of (Array.isArray(b.items) ? b.items : []).slice(0, 40)) {
+      const p = byName.get(String(it && it.name));
+      const qty = Number(it && it.qty);
+      if (!p || !p.price || !Number.isInteger(qty) || qty < 1 || qty > 999) continue;
+      items.push({ name: p.name, qty, unitPrice: p.price, unitCost: null });
+    }
+    if (!items.length) throw httpError(400, 'Your order is empty.');
+    const total = items.reduce((t, i) => t + i.unitPrice * i.qty, 0);
+    const name = clean(b.name, 80);
+    const phone = String(b.phone || '').replace(/[^0-9+]/g, '').slice(0, 16);
+    const sig = crypto.createHash('sha256').update(JSON.stringify([line, items.map((i) => [i.name, i.qty]), name, phone])).digest('hex').slice(0, 24);
+    // tapping the button twice must not make two orders
+    const dup = (await q(`SELECT public_id FROM line_orders WHERE line = $1 AND sig = $2 AND created_at > $3 ORDER BY id DESC LIMIT 1`,
+      [line, sig, new Date(Date.now() - 30 * 60 * 1000).toISOString()])).rows[0];
+    if (dup) return res.json({ ok: true, orderId: dup.public_id });
+    const prefix = line === 'beauty' ? 'BW' : 'IN';
+    const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let id = null;
+    for (let i = 0; i < 6 && !id; i++) {
+      const pid = prefix + '-' + Array.from({ length: 6 }, () => A[crypto.randomInt(A.length)]).join('');
+      const r = await q(
+        `INSERT INTO line_orders (line, public_id, customer_name, phone, items, total, status, source, sig, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,'pending','site',$7,$8) ON CONFLICT (public_id) DO NOTHING RETURNING public_id`,
+        [line, pid, name, phone, JSON.stringify(items), total, sig, new Date().toISOString()]);
+      id = r.rows[0] ? r.rows[0].public_id : null;
+    }
+    if (!id) throw httpError(500, 'Could not record the order.');
+    res.json({ ok: true, orderId: id });
+  });
+
   async function start() { /* nothing to warm up: photos live on the image host */ }
 
   return { invalidate, getCatalog, getSettings, DEFAULTS, notFound, start, cdn, readLine, LINE_KEYS, LINE_DEFAULTS };

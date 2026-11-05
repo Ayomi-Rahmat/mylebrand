@@ -38,6 +38,9 @@ const STAGES = [
   { key: 'delivered', scope: 'order', phase: 'Delivery', title: 'Delivered',
     desc: 'Delivered. Enjoy your pieces.',
     inLabel: 'Delivered', outLabel: null },
+  { key: 'received', scope: 'order', phase: 'Delivery', title: 'Received',
+    desc: 'You have your order in your hands. Thank you for trusting MYLEBRAND. 🤍',
+    inLabel: 'Received', outLabel: null },
 ];
 
 const STAGE_INDEX = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));

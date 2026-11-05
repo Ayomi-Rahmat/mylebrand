@@ -295,3 +295,6 @@ body.noscroll { overflow: hidden; }
   .wact { flex-basis: 100%; }
   .wact .buyrow { flex-wrap: wrap; }
 }
+.cinrow { display: grid; gap: 8px; margin: 0 0 8px; }
+@media (min-width: 420px) { .cinrow { grid-template-columns: 1fr 1fr; } }
+.cin { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; background: #fff; }

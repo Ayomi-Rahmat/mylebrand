@@ -180,6 +180,33 @@ async function initDb() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS line_orders (
+      id SERIAL PRIMARY KEY,
+      line TEXT NOT NULL,
+      public_id TEXT NOT NULL UNIQUE,
+      customer_name TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      items JSONB NOT NULL DEFAULT '[]',
+      total INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source TEXT NOT NULL DEFAULT 'site',
+      sig TEXT,
+      created_at TEXT NOT NULL,
+      paid_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_line_orders_line ON line_orders (line, id);
+    CREATE TABLE IF NOT EXISTS ledger_entries (
+      id SERIAL PRIMARY KEY,
+      scope TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      label TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      entry_date TEXT,
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_ledger_scope ON ledger_entries (scope, id);
     ALTER TABLE products ADD COLUMN IF NOT EXISTS sold_out BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE products ADD COLUMN IF NOT EXISTS qty_bought INTEGER;
 

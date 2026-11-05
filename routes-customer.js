@@ -6,7 +6,7 @@ const crypto = require('crypto');
 module.exports = function mountCustomer(app, d) {
   const { rateLimit, q, httpError, clean, intId, hashPin: hashSecret, verifyPin: verifySecret, sha, cookies, sameOrigin, timelineFrom, STAGES, PROD } = d;
 
-  const SESSION_MS = 14 * 24 * 60 * 60 * 1000;
+  const SESSION_MS = 24 * 60 * 60 * 1000; // customers log in again after 24 hours
   const COOKIE = 'mb_cust';
   const HINT = 'mb_in'; // not secret: it only tells the page "ask the server who I am", so visitors never wake the database for nothing
   const secure = PROD ? '; Secure' : '';
@@ -236,6 +236,22 @@ module.exports = function mountCustomer(app, d) {
     if (!r.rows.length) throw httpError(409, 'Only an order that has not been paid yet can be cancelled here. Please message us on WhatsApp.');
     await q(`INSERT INTO order_log (order_id, at, what, note) VALUES ($1,$2,'cancelled','Cancelled by the customer')`, [r.rows[0].id, new Date().toISOString()]);
     d.shop.invalidate();
+    res.json({ ok: true });
+  });
+
+  // the customer taps "I have received my order" once it has been delivered
+  app.post('/api/account/orders/:id/received', requireCustomer, sameOrigin, async (req, res) => {
+    const c = await getCustomer(req);
+    const o = (await q(`SELECT id, batch_id FROM orders WHERE public_id = $1 AND customer_id = $2 AND status = 'paid'`,
+      [String(req.params.id).toUpperCase().slice(0, 20), c.id])).rows[0];
+    if (!o) throw httpError(404, 'Order not found.');
+    const ev = (await q(`SELECT stage, at FROM events WHERE order_id = $1 AND stage IN ('delivered','received')`, [o.id])).rows;
+    const del = ev.find((e) => e.stage === 'delivered');
+    if (!del) throw httpError(409, 'Your order has not been marked as delivered yet.');
+    if (ev.find((e) => e.stage === 'received')) return res.json({ ok: true });
+    const now = new Date().toISOString();
+    await q(`INSERT INTO events (batch_id, order_id, stage, at, note) VALUES ($1,$2,'received',$3,'Confirmed by the customer') ON CONFLICT DO NOTHING`,
+      [o.batch_id, o.id, now > del.at ? now : del.at]);
     res.json({ ok: true });
   });
 
